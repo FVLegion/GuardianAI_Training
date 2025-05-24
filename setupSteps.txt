@@ -1,3 +1,65 @@
+Guardian AI Training Pipeline - Setup Guide
+=============================================
+
+🚀 Quick Setup (Recommended)
+-----------------------------
+1. Run the automated setup script:
+   python setup.py
+
+2. Configure ClearML:
+   clearml-init
+
+3. Run the pipeline:
+   python Guardian_pipeline.py
+
+📋 Manual Setup
+---------------
+1. Install Python 3.8+ and pip
+
+2. Install dependencies:
+   pip install -r requirements.txt
+
+3. Configure ClearML:
+   - Create account at https://app.clear.ml
+   - Run: clearml-init
+   - Enter your credentials when prompted
+
+4. Prepare your dataset:
+   - Upload pose keypoint data to ClearML
+   - Ensure data format matches expected structure
+   - Update dataset_name and dataset_project in Guardian_pipeline.py
+
+5. Run the training pipeline:
+   python Guardian_pipeline.py
+
+🔧 Configuration Options
+------------------------
+Edit Guardian_pipeline.py to customize:
+- Dataset name and project
+- Model hyperparameters
+- Training epochs and batch size
+- HPO search space
+
+🧹 Cleanup
+----------
+To remove training artifacts:
+python cleanup.py
+
+📊 Monitoring
+-------------
+- View experiments: https://app.clear.ml
+- Check pipeline progress in ClearML dashboard
+- Monitor GPU usage with nvidia-smi (if using CUDA)
+
+🐛 Troubleshooting
+------------------
+- Check ClearML connection: clearml-agent list
+- Verify dataset upload: Check ClearML web interface
+- GPU issues: Ensure CUDA drivers are installed
+- Memory errors: Reduce batch size in pipeline
+
+For detailed information, see README.md
+
 pip install clearml
 
 clearml-init

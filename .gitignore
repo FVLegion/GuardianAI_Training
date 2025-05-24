@@ -1,4 +1,76 @@
-data/
-.ipynb_checkpoints/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyTorch models and checkpoints
 *.pt
-# *__init__.py
+*.pth
+*.ckpt
+best_model_*.pt
+
+# Training artifacts
+training_metrics.png
+attention_analysis.png
+confusion_matrix.png
+evaluation_outputs/
+*.png
+*.jpg
+*.jpeg
+
+# ClearML
+clearml.conf
+.clearml/
+
+# Data directories
+data/
+datasets/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
