@@ -78,25 +78,25 @@ def download_and_verify_clearml_dataset(
         # Move/copy files to target location
         moved_items_count = 0
         copied_items_count = 0
-            for item_name in os.listdir(temp_download_path):
-                source_item_path = temp_download_path / item_name
-                destination_item_path = local_path_obj / item_name
-        
-                if destination_item_path.exists():
-                    if destination_item_path.is_dir():
-                        shutil.rmtree(destination_item_path)
-                    else:
-                        destination_item_path.unlink(missing_ok=True) 
-                
-                if source_item_path.is_dir():
-                    shutil.move(str(source_item_path), str(destination_item_path))
-                    moved_items_count += 1
-                else: 
-                    shutil.copy2(str(source_item_path), str(destination_item_path))
-                    copied_items_count += 1
+        for item_name in os.listdir(temp_download_path):
+            source_item_path = temp_download_path / item_name
+            destination_item_path = local_path_obj / item_name
+    
+            if destination_item_path.exists():
+                if destination_item_path.is_dir():
+                    shutil.rmtree(destination_item_path)
+                else:
+                    destination_item_path.unlink(missing_ok=True) 
+            
+            if source_item_path.is_dir():
+                shutil.move(str(source_item_path), str(destination_item_path))
+                moved_items_count += 1
+            else: 
+                shutil.copy2(str(source_item_path), str(destination_item_path))
+                copied_items_count += 1
 
         # Cleanup temporary directory
-            shutil.rmtree(temp_download_path)
+        shutil.rmtree(temp_download_path)
         comp_logger.info(f"Dataset downloaded successfully with {moved_items_count} directories and {copied_items_count} files")
         
         return str(local_path_obj) if local_path_obj.exists() and local_path_obj.is_dir() else None
@@ -699,11 +699,7 @@ def train_bilstm(
         "grad_clip_norm": grad_clip_norm,
         "noise_factor": noise_factor,
         "best_validation_accuracy": best_acc,
-        "total_parameters": total_params
-    })
-    
-    # Add training statistics
-    output_model.update_labels({
+        "total_parameters": total_params,
         "framework": "PyTorch",
         "task_type": "Action Recognition",
         "data_type": "Pose Keypoints",
