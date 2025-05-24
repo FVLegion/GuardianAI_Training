@@ -14,29 +14,22 @@ def download_and_verify_clearml_dataset(
     dataset_project: str,
     local_target_path: str
 ) -> str | None:
-    """
-    Downloads a ClearML dataset to a specified local path, ensuring it's present and up-to-date.
-    Uses dataset.get_local_copy() with no arguments and then moves/copies contents.
-    """
+    # ... (content of this component remains the same as the last working version) ...
     local_path_obj = pathlib.Path(local_target_path).resolve()
     comp_logger = logging.getLogger(f"Component.{download_and_verify_clearml_dataset.__name__}")
     comp_logger.info(f"Component execution started.")
     comp_logger.info(f"Requested local target path: '{local_target_path}', Resolved to absolute path: '{local_path_obj}'")
-
     dataset_files_metadata = []
-
     try:
         comp_logger.info(f"Ensuring local target directory exists: '{local_path_obj}'")
         local_path_obj.mkdir(parents=True, exist_ok=True)
         comp_logger.info(f"Local target directory '{local_path_obj}' ensured to exist.")
-
         comp_logger.info(f"Attempting to get ClearML dataset metadata for '{dataset_name}' from project '{dataset_project}'.")
         dataset = Dataset.get(
             dataset_name=dataset_name,
             dataset_project=dataset_project,
             only_completed=True
         )
-
         if not dataset:
             comp_logger.error(f"ClearML dataset '{dataset_name}' not found in project '{dataset_project}' or no completed version available.")
             return None
@@ -46,37 +39,29 @@ def download_and_verify_clearml_dataset(
             comp_logger.info(f"Dataset '{dataset.id}' metadata lists {len(dataset_files_metadata)} files. First few: {dataset_files_metadata[:5]}")
         except Exception as e_list_meta: 
             comp_logger.warning(f"Could not list files from dataset metadata: {e_list_meta}")
-
         comp_logger.info(f"Attempting to get local copy of dataset '{dataset.id}' using default SDK mechanism (no arguments to get_local_copy).")
         temp_download_path_str = dataset.get_local_copy() 
-
         if not temp_download_path_str:
             comp_logger.error(f"dataset.get_local_copy() returned None or empty path. Cannot proceed.")
             return None
-
         temp_download_path = pathlib.Path(temp_download_path_str).resolve()
         comp_logger.info(f"dataset.get_local_copy() returned temporary path: '{temp_download_path}'")
-
         if not temp_download_path.exists() or not temp_download_path.is_dir():
             comp_logger.error(f"Temporary path '{temp_download_path}' from get_local_copy() does not exist or is not a directory.")
             return None
-
         comp_logger.info(f"Preparing to move/copy contents from temporary path '{temp_download_path}' to target '{local_path_obj}'")
-        
         moved_items_count = 0
         copied_items_count = 0
         try:
             for item_name in os.listdir(temp_download_path):
                 source_item_path = temp_download_path / item_name
                 destination_item_path = local_path_obj / item_name
-
                 if destination_item_path.exists():
                     comp_logger.warning(f"Destination item '{destination_item_path}' already exists. Removing to overwrite.")
                     if destination_item_path.is_dir():
                         shutil.rmtree(destination_item_path)
                     else:
                         destination_item_path.unlink(missing_ok=True) 
-                
                 if source_item_path.is_dir():
                     shutil.move(str(source_item_path), str(destination_item_path))
                     moved_items_count += 1
@@ -84,11 +69,9 @@ def download_and_verify_clearml_dataset(
                     shutil.copy2(str(source_item_path), str(destination_item_path))
                     copied_items_count += 1
             comp_logger.info(f"Successfully moved {moved_items_count} directories and copied {copied_items_count} files from '{temp_download_path}' to '{local_path_obj}'.")
-
             comp_logger.info(f"Cleaning up temporary download directory: '{temp_download_path}'")
             shutil.rmtree(temp_download_path)
             comp_logger.info(f"Successfully cleaned up '{temp_download_path}'.")
-
         except Exception as e_copy:
             comp_logger.error(f"Error during copy/move from '{temp_download_path}' to '{local_path_obj}': {e_copy}", exc_info=True)
             if temp_download_path.exists(): 
@@ -98,7 +81,6 @@ def download_and_verify_clearml_dataset(
                 except Exception as e_cleanup:
                     comp_logger.error(f"Failed to cleanup '{temp_download_path}' after copy error: {e_cleanup}")
             return None
-
         if local_path_obj.exists() and local_path_obj.is_dir():
             comp_logger.info(f"Dataset '{dataset_name}' is now available at the target local path: '{local_path_obj}'.")
             try:
@@ -112,10 +94,10 @@ def download_and_verify_clearml_dataset(
         else:
             comp_logger.error(f"Target local path '{local_path_obj}' does not exist or is not a directory after copy/move operation.")
             return None
-
     except Exception as e:
         comp_logger.error(f"An unexpected error occurred in download_and_verify_clearml_dataset for '{dataset_name}': {e}", exc_info=True)
         return None
+
 
 @PipelineDecorator.component(return_values=["train_loader", "val_loader", "test_loader", "input_size", "num_classes"])
 def prepare_data(dataset_path: str):
@@ -123,20 +105,52 @@ def prepare_data(dataset_path: str):
     comp_logger = logging.getLogger(f"Component.{prepare_data.__name__}")
     comp_logger.info(f"Component 'prepare_data' started with dataset_path: {dataset_path}")
 
-    comp_logger.info(f"Current sys.path (at component start): {sys.path}")
-    comp_logger.info(f"Current working directory (at component start): {os.getcwd()}")
+    # --- Enhanced Debugging for sys.path and CWD ---
+    component_execution_cwd = os.getcwd()
+    comp_logger.info(f"INITIAL component CWD: {component_execution_cwd}")
+    comp_logger.info(f"INITIAL sys.path: {sys.path}")
+    
+    # Log contents of CWD
+    try:
+        comp_logger.info(f"Listing CWD ('{component_execution_cwd}') contents: {os.listdir(component_execution_cwd)}")
+    except Exception as e_listdir_cwd:
+        comp_logger.error(f"Error listing CWD contents: {e_listdir_cwd}")
+
+    # Check for 'training' subdirectory in CWD and list its contents
+    training_dir_in_cwd = pathlib.Path(component_execution_cwd) / "training"
+    if training_dir_in_cwd.exists() and training_dir_in_cwd.is_dir():
+        comp_logger.info(f"'training' directory FOUND in CWD at: {training_dir_in_cwd}")
+        try:
+            comp_logger.info(f"Contents of 'training' directory: {os.listdir(str(training_dir_in_cwd))}")
+            init_py_path = training_dir_in_cwd / "__init__.py"
+            if init_py_path.exists():
+                comp_logger.info(f"'training/__init__.py' FOUND at {init_py_path}.")
+            else:
+                comp_logger.warning(f"'training/__init__.py' NOT FOUND at {init_py_path}. THIS IS CRITICAL.")
+        except Exception as e_listdir_training:
+            comp_logger.error(f"Error listing 'training' dir contents: {e_listdir_training}")
+    else:
+        comp_logger.warning(f"'training' directory NOT FOUND in CWD at: {training_dir_in_cwd}")
+
+    # Add component's CWD to sys.path if not already there, as ClearML should place the 'training' package here.
+    if component_execution_cwd not in sys.path:
+        sys.path.insert(0, component_execution_cwd)
+        comp_logger.info(f"Added component CWD '{component_execution_cwd}' to sys.path.")
+        comp_logger.info(f"sys.path AFTER CWD addition: {sys.path}")
+    else:
+        comp_logger.info(f"Component CWD '{component_execution_cwd}' was already in sys.path.")
+    # --- End of Enhanced Debugging ---
     
     try:
-        comp_logger.info("Attempting to import PoseDataset from training.dataset_utils")
-        # This import relies on the project root (GuardianAI_Training) being in sys.path
-        from training.dataset_utils import PoseDataset 
+        comp_logger.info("Attempting to import PoseDataset from training.dataset_utils...")
+        from ..training_utils import dataset_utils 
         comp_logger.info("Successfully imported PoseDataset from training.dataset_utils")
     except ImportError as e:
         comp_logger.error(f"Failed to import PoseDataset from training.dataset_utils: {e}.", exc_info=True)
         comp_logger.error("Ensure 'dataset_utils.py' is inside a 'training' subdirectory, "
-                          "and that 'GuardianAI_Training/training/__init__.py' exists. "
-                          "Also check if the project root 'GuardianAI_Training' was correctly added to sys.path by the main script.")
-        raise
+                          "AND 'GuardianAI_Training/training/__init__.py' (an empty file) exists and is part of your project code. "
+                          "The debug logs above should indicate if the 'training' directory and '__init__.py' were found by the component.")
+        raise # Re-raise the error to stop the component
 
     from torch.utils.data import DataLoader
     from sklearn.model_selection import train_test_split
@@ -145,6 +159,8 @@ def prepare_data(dataset_path: str):
     comp_logger.info(f"Action classes: {action_classes}")
     comp_logger.info(f"Initializing PoseDataset with data_dir: {dataset_path}")
 
+    PoseDataset = dataset_utils.PoseDataset
+
     dataset = PoseDataset(data_dir=dataset_path, action_classes=action_classes)
     
     if not dataset.data or not dataset.labels: 
@@ -152,7 +168,7 @@ def prepare_data(dataset_path: str):
                           "Check dataset_path, subdirectories for action_classes, and .json files.")
         return None, None, None, 0, 0 
 
-    comp_logger.info(f"Total samples loaded by PoseDataset: {len(dataset.data)}")
+    comp_logger.info(f"Total samples loaded by PoseДataSet: {len(dataset.data)}")
 
     comp_logger.info("Splitting data into train, validation, and test sets.")
     train_val_data, test_data, train_val_labels, test_labels = train_test_split(
@@ -189,79 +205,61 @@ def prepare_data(dataset_path: str):
 @PipelineDecorator.pipeline(
     name='Data Ingestion and Preparation Pipeline', 
     project='Guardian_Training',
-    version='0.4.2' # Incremented version
+    version='0.4.4' # Incremented version
 )
 def data_processing_pipeline(): 
+    # ... (content of this pipeline function remains the same) ...
     pipe_logger = logging.getLogger(f"Pipeline.{data_processing_pipeline.__name__}")
     pipe_logger.info("Data processing pipeline function CALLED.")
-
     dataset_name = "Guardian_Dataset" 
     dataset_project = "Guardian_Training" 
-    
     try:
-        # This will be the directory where Guardian_pipeline.py is located.
-        # This path will be used to construct the local_data_path.
         script_dir_for_data = pathlib.Path(__file__).resolve().parent
     except NameError: 
-        # Fallback if __file__ is not defined (e.g., interactive session, though less likely for pipeline script)
         script_dir_for_data = pathlib.Path(".").resolve() 
         pipe_logger.warning(f"__file__ not defined when determining script_dir_for_data, using current working directory: {script_dir_for_data}")
-
     local_data_root = script_dir_for_data / "data" 
     guardian_dataset_path = local_data_root / dataset_name
     pipe_logger.info(f"Target local path for Guardian_Dataset: {guardian_dataset_path}")
-
     dataset_path_output = download_and_verify_clearml_dataset(
         dataset_name=dataset_name,
         dataset_project=dataset_project,
         local_target_path=str(guardian_dataset_path)
     )
-
     if not dataset_path_output:
         pipe_logger.error("Pipeline FAILED: download_and_verify_clearml_dataset did not return a valid path.")
         return None, None, None, 0, 0 
-
     pipe_logger.info(f"Dataset downloaded to: {dataset_path_output}")
-
     pipe_logger.info(f"Calling prepare_data component with dataset_path: {dataset_path_output}")
     train_loader, val_loader, test_loader, input_size, num_classes = prepare_data(
         dataset_path=dataset_path_output
     )
-
     if train_loader is None: 
         pipe_logger.error("Pipeline FAILED: prepare_data component failed to produce data loaders.")
         return None, None, None, 0, 0
-
     pipe_logger.info(f"Data preparation completed. Input size: {input_size}, Num classes: {num_classes}")
     pipe_logger.info(f"Train loader samples: {len(train_loader.dataset) if train_loader and hasattr(train_loader, 'dataset') else 'N/A'}, "
                      f"Val loader samples: {len(val_loader.dataset) if val_loader and hasattr(val_loader, 'dataset') else 'N/A'}, "
                      f"Test loader samples: {len(test_loader.dataset) if test_loader and hasattr(test_loader, 'dataset') else 'N/A'}")
-    
     pipe_logger.info("Data processing pipeline logic finished.")
     return train_loader, val_loader, test_loader, input_size, num_classes
 
-
 if __name__ == '__main__':
-    # --- Add project root to sys.path ---
-    # This assumes your script Guardian_pipeline.py is in the project root (GuardianAI_Training)
-    # If it's in a subdirectory, adjust accordingly.
+    # --- sys.path modification for the main script ---
+    # This helps if you run other Python scripts/modules from __main__ that need the project root.
+    # For components, ClearML's packaging and the CWD of the component are more critical.
     try:
-        # Get the directory where this script (Guardian_pipeline.py) is located.
-        # This should be your project root: "GuardianAI_Training"
-        project_root_dir = str(pathlib.Path(__file__).resolve().parent)
-        if project_root_dir not in sys.path:
-            sys.path.insert(0, project_root_dir)
-            logging.info(f"Added project root '{project_root_dir}' to sys.path.")
-        logging.info(f"Current sys.path (after modification): {sys.path}")
+        project_root_dir_main = str(pathlib.Path(__file__).resolve().parent)
+        if project_root_dir_main not in sys.path:
+            sys.path.insert(0, project_root_dir_main)
+            logging.info(f"Added project root '{project_root_dir_main}' to sys.path for main script execution.")
     except NameError:
-        # __file__ is not defined (e.g. running in an interactive environment like Jupyter)
-        # In this case, assume the current working directory is the project root.
-        project_root_dir = str(pathlib.Path(".").resolve())
-        if project_root_dir not in sys.path:
-            sys.path.insert(0, project_root_dir)
-            logging.info(f"__file__ not defined. Added current working directory '{project_root_dir}' to sys.path as project root.")
-        logging.info(f"Current sys.path (after modification, __file__ undefined case): {sys.path}")
-    # --- End of sys.path modification ---
+        project_root_dir_main = str(pathlib.Path(".").resolve())
+        if project_root_dir_main not in sys.path:
+            sys.path.insert(0, project_root_dir_main)
+            logging.info(f"__file__ not defined. Added CWD '{project_root_dir_main}' to sys.path for main script.")
+    logging.info(f"sys.path (for main script execution context): {sys.path}")
+    # --- End of sys.path modification for main script ---
 
     try:
         logging.info("Attempting to initialize ClearML Task for the script run...")
@@ -273,23 +271,24 @@ if __name__ == '__main__':
     logging.info("Preparing for local pipeline execution with PipelineDecorator.run_locally().")
     
     try:
-        PipelineDecorator.run_locally()
+        PipelineDecorator.run_locally() # Sets up the local execution context
         logging.info("PipelineDecorator.run_locally() setup completed.")
 
         logging.info("Now calling the pipeline function: data_processing_pipeline()...")
-        results = data_processing_pipeline() 
+        results = data_processing_pipeline() # Execute the pipeline
+        
         if results and results[0] is not None: 
-             train_loader_res, val_loader_res, test_loader_res, input_size_res, num_classes_res = results
-             logging.info(f"Pipeline function call completed.")
+             train_loader_res, _, _, input_size_res, num_classes_res = results # Unpack relevant results
+             logging.info(f"Pipeline function call completed successfully.")
              logging.info(f"  Input Size: {input_size_res}, Num Classes: {num_classes_res}")
              if train_loader_res and hasattr(train_loader_res, 'dataset'):
                  logging.info(f"  TrainLoader has {len(train_loader_res.dataset)} samples, {len(train_loader_res)} batches.")
              else:
                  logging.info(f"  TrainLoader not fully available or empty.")
         else:
-            logging.error("Pipeline execution did not return valid results or failed.")
+            logging.error("Pipeline execution did not return valid results or indicates a failure.")
 
     except Exception as e:
-        logging.error(f"An error occurred during local pipeline execution: {e}", exc_info=True)
+        logging.error(f"An error occurred during the main pipeline execution block: {e}", exc_info=True)
 
     logging.info("Local pipeline script execution process finished.")
