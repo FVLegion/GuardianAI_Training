@@ -263,9 +263,18 @@ def train_bilstm(
     epochs: int = 50,
     hidden_size: int = 256,
     num_layers: int = 4,
-    dropout_rate: float = 0.1
+    dropout_rate: float = 0.1,
+    # New hyperparameters for enhanced search
+    batch_size: int = 32,
+    weight_decay: float = 1e-5,
+    scheduler_patience: int = 5,
+    scheduler_factor: float = 0.5,
+    grad_clip_norm: float = 1.0,
+    noise_factor: float = 0.0,
+    use_layer_norm: bool = False,
+    attention_dropout: float = 0.1
 ):
-    """Train a BiLSTM model with comprehensive logging and return task ID and model ID."""
+    """Train a BiLSTM model with comprehensive logging and enhanced hyperparameters."""
     import torch
     import torch.nn as nn
     import torch.optim as optim
@@ -277,27 +286,37 @@ def train_bilstm(
     import json
     import os
     import matplotlib.pyplot as plt
-    
-    # Embedded model classes
+
+    # Enhanced model classes with layer normalization support
     class AttentionLayer(nn.Module):
-        def __init__(self, hidden_size):
+        def __init__(self, hidden_size, dropout_rate=0.1):
             super(AttentionLayer, self).__init__()
             self.attention_weights = nn.Linear(hidden_size * 2, 1)
+            self.dropout = nn.Dropout(dropout_rate)
 
         def forward(self, lstm_output):
             scores = self.attention_weights(lstm_output)
             attention_weights = torch.softmax(scores, dim=1)
+            attention_weights = self.dropout(attention_weights)
             context_vector = torch.sum(attention_weights * lstm_output, dim=1)
             return context_vector, attention_weights.squeeze(-1)
 
     class ActionRecognitionBiLSTMWithAttention(nn.Module):
-        def __init__(self, input_size, hidden_size, num_layers, num_classes, dropout_rate=0.5):
+        def __init__(self, input_size, hidden_size, num_layers, num_classes, 
+                     dropout_rate=0.5, use_layer_norm=False, attention_dropout=0.1):
             super(ActionRecognitionBiLSTMWithAttention, self).__init__()
             self.hidden_size = hidden_size
             self.num_layers = num_layers
             self.bidirectional = True
+            self.use_layer_norm = use_layer_norm
+            
             self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
                                 batch_first=True, dropout=dropout_rate, bidirectional=self.bidirectional)
+            
+            # Optional layer normalization
+            if use_layer_norm:
+                self.layer_norm = nn.LayerNorm(hidden_size * 2)
+            
             self.attention = AttentionLayer(hidden_size)
             self.fc = nn.Linear(hidden_size * 2, num_classes)
             self.dropout = nn.Dropout(dropout_rate)
@@ -307,18 +326,23 @@ def train_bilstm(
             c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
 
             out, _ = self.lstm(x, (h0, c0))
+            
+            # Apply layer normalization if enabled
+            if self.use_layer_norm:
+                out = self.layer_norm(out)
+                
             out = self.dropout(out)
 
             context_vector, attention_weights = self.attention(out)
             out = self.fc(context_vector)
             return out, attention_weights
 
-    # Embedded dataset class
     class PoseDataset(Dataset):
-        def __init__(self, data_dir, action_classes, max_frames=40):
+        def __init__(self, data_dir, action_classes, max_frames=40, noise_factor=0.0):
             self.data_dir = data_dir
             self.action_classes = action_classes
             self.max_frames = max_frames
+            self.noise_factor = noise_factor  # For data augmentation
             self.data, self.labels = self.load_data()
 
         def load_data(self):
@@ -406,7 +430,14 @@ def train_bilstm(
             return len(self.data)
 
         def __getitem__(self, idx):
-            return torch.tensor(self.data[idx], dtype=torch.float32), torch.tensor(self.labels[idx], dtype=torch.long)
+            data = torch.tensor(self.data[idx], dtype=torch.float32)
+            
+            # Add noise for data augmentation if specified
+            if self.noise_factor > 0:
+                noise = torch.randn_like(data) * self.noise_factor
+                data = data + noise
+                
+            return data, torch.tensor(self.labels[idx], dtype=torch.long)
     
     # Initialize task
     task = Task.current_task()
@@ -418,7 +449,7 @@ def train_bilstm(
     
     logger = task.get_logger()
     
-    # Connect hyperparameters
+    # Connect all hyperparameters
     hyperparams = {
         'General/base_lr': base_lr,
         'General/epochs': epochs,
@@ -426,7 +457,15 @@ def train_bilstm(
         'General/num_layers': num_layers,
         'General/dropout_rate': dropout_rate,
         'General/input_size': input_size,
-        'General/num_classes': num_classes
+        'General/num_classes': num_classes,
+        'General/batch_size': batch_size,
+        'General/weight_decay': weight_decay,
+        'General/scheduler_patience': scheduler_patience,
+        'General/scheduler_factor': scheduler_factor,
+        'General/grad_clip_norm': grad_clip_norm,
+        'General/noise_factor': noise_factor,
+        'General/use_layer_norm': use_layer_norm,
+        'General/attention_dropout': attention_dropout
     }
     task.connect(hyperparams)
 
@@ -436,10 +475,12 @@ def train_bilstm(
     logger.report_single_value("Total Parameters", total_params)
     logger.report_single_value("Hidden Size", hidden_size)
     logger.report_single_value("Number of Layers", num_layers)
+    logger.report_single_value("Use Layer Norm", use_layer_norm)
+    logger.report_single_value("Attention Dropout", attention_dropout)
 
-    # Recreate DataLoaders from dataset path
+    # Recreate DataLoaders from dataset path with noise augmentation
     action_classes = ["Falling", "No Action", "Waving"]
-    dataset = PoseDataset(data_dir=dataset_path, action_classes=action_classes)
+    dataset = PoseDataset(data_dir=dataset_path, action_classes=action_classes, noise_factor=noise_factor)
     
     if not dataset.data or not dataset.labels: 
         raise RuntimeError("No data or labels loaded by PoseDataset")
@@ -468,95 +509,90 @@ def train_bilstm(
         logger.report_text(f"Class {action_classes[label]}: {count} samples")
 
     def make_torch_dataset_for_loader(split_data, split_labels):
-        temp_ds = PoseDataset(data_dir=dataset_path, action_classes=action_classes)
+        temp_ds = PoseDataset(data_dir=dataset_path, action_classes=action_classes, noise_factor=noise_factor)
         temp_ds.data = split_data
         temp_ds.labels = split_labels
         return temp_ds
 
-    # Create data loaders
-    batch_size = 32
+    # Create data loaders with configurable batch size
     train_loader = DataLoader(make_torch_dataset_for_loader(train_data, train_labels), 
                              batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(make_torch_dataset_for_loader(val_data, val_labels), 
                            batch_size=batch_size, shuffle=False)
 
-    # Model setup
+    # Initialize model with enhanced parameters
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.report_text(f"Using device: {device}")
-    print(f"Using device: {device}")
-    
     model = ActionRecognitionBiLSTMWithAttention(
         input_size=input_size,
         hidden_size=hidden_size,
         num_layers=num_layers,
         num_classes=num_classes,
-        dropout_rate=dropout_rate
+        dropout_rate=dropout_rate,
+        use_layer_norm=use_layer_norm,
+        attention_dropout=attention_dropout
     ).to(device)
+
+    # Enhanced optimizer with weight decay
+    optimizer = optim.Adam(model.parameters(), lr=base_lr, weight_decay=weight_decay)
     
-    optimizer = optim.Adam(model.parameters(), lr=base_lr)
+    # Enhanced scheduler with configurable parameters
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=scheduler_factor, patience=scheduler_patience, verbose=True
+    )
+    
     criterion = nn.CrossEntropyLoss()
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
 
+    # Training loop with gradient clipping
     best_acc = 0.0
-    best_model_path = f"best_model_{task.id}.pt"
-    train_losses, val_losses, val_accuracies = [], [], []
-    learning_rates = []
+    best_model_path = "best_bilstm_model.pth"
+    train_losses, val_losses, val_accuracies, learning_rates = [], [], [], []
 
-    print(f"Starting training on {device} with {len(train_data)} training samples...")
-
-    # Training loop with enhanced logging
     for epoch in range(epochs):
         # Training phase
         model.train()
-        train_loss = 0.0
-        train_correct = 0
-        train_total = 0
-        
+        total_train_loss = 0.0
+        correct_train = 0
+        total_train = 0
+
         for batch_idx, (x, y) in enumerate(train_loader):
             x, y = x.to(device), y.to(device)
+            
             optimizer.zero_grad()
-            outputs, attention_weights = model(x)
+            outputs, _ = model(x)
             loss = criterion(outputs, y)
             loss.backward()
             
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # Apply gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
             
             optimizer.step()
-            train_loss += loss.item()
-            
-            # Calculate training accuracy
-            preds = outputs.argmax(dim=1)
-            train_correct += (preds == y).sum().item()
-            train_total += y.size(0)
-        
-        train_acc = 100 * train_correct / train_total
-        avg_train_loss = train_loss / len(train_loader)
-        
+
+            total_train_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total_train += y.size(0)
+            correct_train += predicted.eq(y).sum().item()
+
+        avg_train_loss = total_train_loss / len(train_loader)
+        train_acc = 100.0 * correct_train / total_train
+
         # Validation phase
         model.eval()
-        val_correct = 0
-        val_total = 0
-        val_loss = 0.0
-        all_val_preds = []
-        all_val_labels = []
-        
+        total_val_loss = 0.0
+        all_val_preds, all_val_labels = [], []
+
         with torch.no_grad():
             for x, y in val_loader:
                 x, y = x.to(device), y.to(device)
-                outputs, attention_weights = model(x)
+                outputs, _ = model(x)
                 loss = criterion(outputs, y)
-                val_loss += loss.item()
-                
-                preds = outputs.argmax(dim=1)
-                val_correct += (preds == y).sum().item()
-                val_total += y.size(0)
-                
-                all_val_preds.extend(preds.cpu().numpy())
-                all_val_labels.extend(y.cpu().numpy())
-        
-        val_acc = 100 * val_correct / val_total
-        avg_val_loss = val_loss / len(val_loader)
+
+                total_val_loss += loss.item()
+                _, predicted = outputs.max(1)
+                all_val_preds.extend(predicted.cpu().tolist())
+                all_val_labels.extend(y.cpu().tolist())
+
+        avg_val_loss = total_val_loss / len(val_loader)
+        val_acc = accuracy_score(all_val_labels, all_val_preds) * 100
         
         # Calculate per-class metrics
         precision, recall, f1, _ = precision_recall_fscore_support(
@@ -646,31 +682,38 @@ def train_bilstm(
     output_model = OutputModel(task=task, name="BiLSTM_ActionRecognition_Enhanced", framework="PyTorch")
     output_model.update_weights(weights_filename=best_model_path)
     
-    # Add model metadata
-    model_metadata = {
-        "best_validation_accuracy": float(best_acc),
-        "total_epochs": epochs,
-        "final_learning_rate": float(current_lr),
-        "model_architecture": {
-            "input_size": input_size,
-            "hidden_size": hidden_size,
-            "num_layers": num_layers,
-            "num_classes": num_classes,
-            "dropout_rate": dropout_rate
-        },
-        "training_samples": len(train_data),
-        "validation_samples": len(val_data)
-    }
+    # Add detailed model metadata
+    output_model.update_design(config_dict={
+        "architecture": "BiLSTM with Attention",
+        "input_size": input_size,
+        "hidden_size": hidden_size,
+        "num_layers": num_layers,
+        "num_classes": num_classes,
+        "dropout_rate": dropout_rate,
+        "use_layer_norm": use_layer_norm,
+        "attention_dropout": attention_dropout,
+        "batch_size": batch_size,
+        "weight_decay": weight_decay,
+        "scheduler_patience": scheduler_patience,
+        "scheduler_factor": scheduler_factor,
+        "grad_clip_norm": grad_clip_norm,
+        "noise_factor": noise_factor,
+        "best_validation_accuracy": best_acc,
+        "total_parameters": total_params
+    })
     
-    # Upload training artifacts
-    task.upload_artifact("training_metrics", "training_metrics.png")
-    task.upload_artifact("model_metadata", artifact_object=model_metadata)
-    task.upload_artifact("best_model_weights", best_model_path)
+    # Add training statistics
+    output_model.update_labels({
+        "framework": "PyTorch",
+        "task_type": "Action Recognition",
+        "data_type": "Pose Keypoints",
+        "best_accuracy": f"{best_acc:.2f}%",
+        "architecture_type": "BiLSTM+Attention",
+        "enhanced_features": "LayerNorm+GradClip+WeightDecay+NoiseAug"
+    })
     
-    output_model.publish()
-    
-    print(f"Training completed! Best validation accuracy: {best_acc:.2f}%")
     print(f"Model published with ID: {output_model.id}")
+    print(f"Best validation accuracy: {best_acc:.2f}%")
     
     return task.id, output_model.id
 
@@ -689,64 +732,121 @@ def bilstm_hyperparam_optimizer(
     dataset_path: str,
     input_size: int,
     num_classes: int,
-    total_max_trials: int = 5
+    total_max_trials: int = 50  # Increased for richer visualization
 ):
-    """Run GridSearch HPO on the Train_BiLSTM component."""
-    from clearml import Task
-    from clearml.automation import HyperParameterOptimizer, DiscreteParameterRange
-    from clearml.automation import GridSearch
-    from clearml import Model
+    """
+    Enhanced hyperparameter optimization with extensive search space for rich visualization.
+    Uses RandomSearch to explore a large parameter space efficiently.
+    """
+    from clearml.automation import HyperParameterOptimizer, RandomSearch
+    from clearml.automation import DiscreteParameterRange, UniformParameterRange
+    from clearml import Task, Model
+    
+    print(f"Starting enhanced hyperparameter optimization with {total_max_trials} trials...")
     
     # Initialize HPO task
     hpo_task = Task.init(
         project_name="Guardian_Training",
-        task_name="BiLSTM_GridSearch_Controller",
+        task_name="BiLSTM_Enhanced_RandomSearch_Controller",
         task_type=Task.TaskTypes.optimizer,
         reuse_last_task_id=False
     )
 
-    # Define search space with discrete values for GridSearch
+    # Define extensive search space for rich visualization
     optimizer = HyperParameterOptimizer(
         base_task_id=base_task_id,
         hyper_parameters=[
-            DiscreteParameterRange('General/base_lr', values=[0.0008, 0.0009, 0.001, 0.0011, 0.0012]),  # Denser around 0.001
-            DiscreteParameterRange('General/hidden_size', values=[120, 128, 136, 144, 152]),  # Denser around 128-140
-            DiscreteParameterRange('General/num_layers', values=[1, 2, 3]),  # Added single layer option
-            DiscreteParameterRange('General/dropout_rate', values=[0.1, 0.15, 0.2, 0.25, 0.3]),  # Denser between 0.1-0.3
-            DiscreteParameterRange('General/epochs', values=[20, 25, 30])  # Added intermediate value
+            # Learning rate with continuous range
+            UniformParameterRange('General/base_lr', min_value=0.0001, max_value=0.01),
+            
+            # Hidden size with wide discrete range
+            DiscreteParameterRange('General/hidden_size', values=[64, 96, 128, 160, 192, 224, 256, 288, 320, 384, 448, 512]),
+            
+            # Number of layers
+            DiscreteParameterRange('General/num_layers', values=[1, 2, 3, 4, 5, 6]),
+            
+            # Dropout rate with continuous range
+            UniformParameterRange('General/dropout_rate', min_value=0.05, max_value=0.6),
+            
+            # Epochs with more variety
+            DiscreteParameterRange('General/epochs', values=[15, 20, 25, 30, 35, 40, 45, 50]),
+            
+            # Additional hyperparameters for richer visualization
+            # Batch size
+            DiscreteParameterRange('General/batch_size', values=[16, 24, 32, 48, 64, 96, 128]),
+            
+            # Weight decay for regularization
+            UniformParameterRange('General/weight_decay', min_value=1e-6, max_value=1e-2),
+            
+            # Learning rate scheduler patience
+            DiscreteParameterRange('General/scheduler_patience', values=[3, 5, 7, 10, 15]),
+            
+            # Learning rate scheduler factor
+            UniformParameterRange('General/scheduler_factor', min_value=0.1, max_value=0.8),
+            
+            # Gradient clipping
+            UniformParameterRange('General/grad_clip_norm', min_value=0.5, max_value=5.0),
+            
+            # Data augmentation parameters
+            UniformParameterRange('General/noise_factor', min_value=0.0, max_value=0.1),
+            
+            # Model architecture variations
+            DiscreteParameterRange('General/use_layer_norm', values=[True, False]),
+            
+            # Attention mechanism variations
+            UniformParameterRange('General/attention_dropout', min_value=0.0, max_value=0.3),
         ],
+        
         # Objective metric we want to maximize
         objective_metric_title="Accuracy",
         objective_metric_series="Validation",
         objective_metric_sign="max",
-        # Increase concurrent experiments since we have more combinations
-        max_number_of_concurrent_tasks=2,
-        # Use GridSearch instead of Optuna
-        optimizer_class=GridSearch,
+        
+        # Increase concurrent experiments for faster execution
+        max_number_of_concurrent_tasks=3,
+        
+        # Use RandomSearch for better exploration
+        optimizer_class=RandomSearch,
+        
         # Keep more top tasks for analysis
-        save_top_k_tasks_only=5,
+        save_top_k_tasks_only=10,
+        
         # Fixed arguments passed to each training task
         base_task_kwargs={
             'dataset_path': dataset_path,
             'input_size': input_size,
             'num_classes': num_classes
         },
+        
         compute_time_limit=None,
         total_max_jobs=total_max_trials,
         min_iteration_per_job=None,
         max_iteration_per_job=None,
     )
     
-    print("Starting GridSearch optimization...")
-    print(f"Total combinations to try: {3 * 2 * 2 * 3 * 2} = {3 * 2 * 2 * 3 * 2}")
-    print("This will be limited by total_max_jobs parameter")
+    print("Starting Enhanced RandomSearch optimization...")
+    print(f"Search space includes:")
+    print("- Learning rate: 0.0001 to 0.01 (continuous)")
+    print("- Hidden size: 64 to 512 (12 discrete values)")
+    print("- Layers: 1 to 6")
+    print("- Dropout: 0.05 to 0.6 (continuous)")
+    print("- Epochs: 15 to 50 (8 values)")
+    print("- Batch size: 16 to 128 (7 values)")
+    print("- Weight decay: 1e-6 to 1e-2 (continuous)")
+    print("- Scheduler patience: 3 to 15 (4 values)")
+    print("- Scheduler factor: 0.1 to 0.8 (continuous)")
+    print("- Gradient clipping: 0.5 to 5.0 (continuous)")
+    print("- Noise factor: 0.0 to 0.1 (continuous)")
+    print("- Layer normalization: True/False")
+    print("- Attention dropout: 0.0 to 0.3 (continuous)")
+    print(f"Total trials: {total_max_trials}")
     
     # Start optimization
     optimizer.start_locally()
     optimizer.wait()
     optimizer.stop()
     
-    print("GridSearch optimization completed!")
+    print("Enhanced RandomSearch optimization completed!")
     
     # Get best experiment
     top_exps = optimizer.get_top_experiments(top_k=1)
@@ -876,13 +976,21 @@ def evaluate_model(
             return context_vector, attention_weights.squeeze(-1)
 
     class ActionRecognitionBiLSTMWithAttention(nn.Module):
-        def __init__(self, input_size, hidden_size, num_layers, num_classes, dropout_rate=0.5):
+        def __init__(self, input_size, hidden_size, num_layers, num_classes, 
+                     dropout_rate=0.5, use_layer_norm=False, attention_dropout=0.1):
             super(ActionRecognitionBiLSTMWithAttention, self).__init__()
             self.hidden_size = hidden_size
             self.num_layers = num_layers
             self.bidirectional = True
+            self.use_layer_norm = use_layer_norm
+            
             self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
                                 batch_first=True, dropout=dropout_rate, bidirectional=self.bidirectional)
+            
+            # Optional layer normalization
+            if use_layer_norm:
+                self.layer_norm = nn.LayerNorm(hidden_size * 2)
+            
             self.attention = AttentionLayer(hidden_size)
             self.fc = nn.Linear(hidden_size * 2, num_classes)
             self.dropout = nn.Dropout(dropout_rate)
@@ -892,6 +1000,11 @@ def evaluate_model(
             c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
 
             out, _ = self.lstm(x, (h0, c0))
+            
+            # Apply layer normalization if enabled
+            if self.use_layer_norm:
+                out = self.layer_norm(out)
+                
             out = self.dropout(out)
 
             context_vector, attention_weights = self.attention(out)
@@ -1051,44 +1164,27 @@ def evaluate_model(
 
     test_loader = DataLoader(make_torch_dataset_for_loader(test_data, test_labels), batch_size=32, shuffle=False)
     
-    # Get parameters from best task - Fix the TypeError
-    best_task = Task.get_task(task_id=best_task_id)
-    try:
-        # Try the new API first
-        params = best_task.get_parameters_as_dict()
-        if 'General' in params:
-            params = params['General']
-        else:
-            # Flatten manually if needed
-            flat_params = {}
-            for section, section_params in params.items():
-                if isinstance(section_params, dict):
-                    for key, value in section_params.items():
-                        flat_params[f"{section}/{key}"] = value
-                else:
-                    flat_params[section] = section_params
-            params = flat_params
-    except Exception as e:
-        print(f"Error getting parameters: {e}")
-        # Use default parameters
-        params = {
-            'hidden_size': 256,
-            'num_layers': 4,
-            'dropout_rate': 0.1
-        }
-
-    # Extract hyperparameters, handling both formats
-    hidden_size = int(params.get('hidden_size', params.get('General/hidden_size', 256)))
-    num_layers = int(params.get('num_layers', params.get('General/num_layers', 4)))
-    dropout_rate = float(params.get('dropout_rate', params.get('General/dropout_rate', 0.1)))
-
-    print(f"Using parameters: hidden_size={hidden_size}, num_layers={num_layers}, dropout_rate={dropout_rate}")
-
-    # Get model
-    if best_model_id == "no_model_found":
-        print("No model found from HPO, skipping evaluation")
-        return 0.0
+    # Get hyperparameters from the best experiment
+    best_exp_task = Task.get_task(task_id=best_task_id)
     
+    # Extract hyperparameters with defaults
+    hyperparams = best_exp_task.get_parameters()
+    
+    # Extract enhanced hyperparameters with fallbacks
+    hidden_size = int(hyperparams.get('General/hidden_size', 256))
+    num_layers = int(hyperparams.get('General/num_layers', 4))
+    dropout_rate = float(hyperparams.get('General/dropout_rate', 0.1))
+    use_layer_norm = hyperparams.get('General/use_layer_norm', False)
+    attention_dropout = float(hyperparams.get('General/attention_dropout', 0.1))
+    
+    print(f"Extracted hyperparameters:")
+    print(f"  Hidden size: {hidden_size}")
+    print(f"  Num layers: {num_layers}")
+    print(f"  Dropout rate: {dropout_rate}")
+    print(f"  Use layer norm: {use_layer_norm}")
+    print(f"  Attention dropout: {attention_dropout}")
+    
+    # Handle model retrieval and loading
     try:
         model_obj = Model(model_id=best_model_id)
         model_path = model_obj.get_local_copy()
@@ -1096,7 +1192,7 @@ def evaluate_model(
         # Try to load the model state dict to inspect its architecture
         checkpoint = torch.load(model_path, map_location='cpu')
         
-        # Infer model architecture from checkpoint
+        # Infer model architecture from checkpoint if needed
         if 'lstm.weight_ih_l0' in checkpoint:
             # Extract architecture info from the checkpoint
             lstm_input_size = checkpoint['lstm.weight_ih_l0'].shape[1]
@@ -1116,13 +1212,21 @@ def evaluate_model(
             else:
                 inferred_hidden_size = lstm_hidden_size
             
-            print(f"Inferred from checkpoint: hidden_size={inferred_hidden_size}, num_layers={inferred_num_layers}")
+            # Check for layer normalization
+            inferred_use_layer_norm = 'layer_norm.weight' in checkpoint
+            
+            print(f"Inferred from checkpoint: hidden_size={inferred_hidden_size}, num_layers={inferred_num_layers}, use_layer_norm={inferred_use_layer_norm}")
             
             # Use inferred parameters if they differ significantly
             if abs(inferred_hidden_size - hidden_size) > 10 or inferred_num_layers != num_layers:
                 print(f"Architecture mismatch detected. Using inferred parameters.")
                 hidden_size = inferred_hidden_size
                 num_layers = inferred_num_layers
+            
+            # Update layer norm setting if inferred differently
+            if inferred_use_layer_norm != use_layer_norm:
+                print(f"Layer norm setting updated from {use_layer_norm} to {inferred_use_layer_norm}")
+                use_layer_norm = inferred_use_layer_norm
         
     except Exception as e:
         print(f"Error retrieving or inspecting model {best_model_id}: {e}")
@@ -1136,7 +1240,9 @@ def evaluate_model(
         hidden_size=hidden_size,
         num_layers=num_layers,
         num_classes=num_classes,
-        dropout_rate=dropout_rate
+        dropout_rate=dropout_rate,
+        use_layer_norm=use_layer_norm,
+        attention_dropout=attention_dropout
     ).to(device)
     
     try:
@@ -1308,7 +1414,7 @@ def guardian_training_pipeline():
         dataset_path=dataset_path,
         input_size=input_size,
         num_classes=num_classes,
-        total_max_trials=5
+        total_max_trials=50
     )
     logging.info(f"HPO completed. Best task ID: {best_task_id}, Best model ID: {best_model_id}")
 
