@@ -1,0 +1,217 @@
+name: Deploy Guardian AI Model
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      model_id:
+        description: 'ClearML Model ID to deploy (optional)'
+        required: false
+        type: string
+      deployment_environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+
+jobs:
+  train_and_deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240  # 4 hours for training + deployment
+
+    env:
+      CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
+      CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
+      CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
+
+    outputs:
+      model_id: ${{ steps.extract_model.outputs.model_id }}
+      test_accuracy: ${{ steps.extract_model.outputs.test_accuracy }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate ClearML Connection
+        run: |
+          python -c "
+          from clearml import Task, Model
+          print('✅ ClearML connection validated')
+          "
+
+      - name: Run Guardian Training Pipeline
+        id: run_pipeline
+        run: |
+          echo "🚀 Starting Guardian AI Training Pipeline..."
+          python Guardian_pipeline.py > pipeline_output.log 2>&1
+          
+          # Check if pipeline completed successfully
+          if [ $? -eq 0 ]; then
+            echo "✅ Pipeline completed successfully"
+            echo "pipeline_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Pipeline failed"
+            echo "pipeline_status=failed" >> $GITHUB_OUTPUT
+            cat pipeline_output.log
+            exit 1
+          fi
+
+      - name: Extract Model Information
+        id: extract_model
+        if: steps.run_pipeline.outputs.pipeline_status == 'success'
+        run: |
+          echo "📊 Extracting model information from pipeline output..."
+          
+          # Extract model ID and accuracy from logs
+          MODEL_ID=$(grep -o "Model published with ID: [a-f0-9]*" pipeline_output.log | tail -1 | cut -d' ' -f5 || echo "")
+          TEST_ACCURACY=$(grep -o "Final Test Accuracy: [0-9.]*%" pipeline_output.log | tail -1 | cut -d' ' -f4 | tr -d '%' || echo "0")
+          
+          if [ -z "$MODEL_ID" ]; then
+            echo "❌ Could not extract model ID from pipeline output"
+            exit 1
+          fi
+          
+          echo "✅ Extracted Model ID: $MODEL_ID"
+          echo "✅ Test Accuracy: $TEST_ACCURACY%"
+          
+          echo "model_id=$MODEL_ID" >> $GITHUB_OUTPUT
+          echo "test_accuracy=$TEST_ACCURACY" >> $GITHUB_OUTPUT
+
+      - name: Validate Model Performance
+        id: validate_model
+        if: steps.extract_model.outputs.model_id != ''
+        run: |
+          ACCURACY=${{ steps.extract_model.outputs.test_accuracy }}
+          MIN_ACCURACY=75.0  # Minimum accuracy threshold for deployment
+          
+          echo "🎯 Model Accuracy: $ACCURACY%"
+          echo "📏 Minimum Threshold: $MIN_ACCURACY%"
+          
+          if (( $(echo "$ACCURACY >= $MIN_ACCURACY" | bc -l) )); then
+            echo "✅ Model meets accuracy threshold for deployment"
+            echo "deploy_approved=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Model accuracy below threshold. Deployment blocked."
+            echo "deploy_approved=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy Model to ClearML Serving
+        if: steps.validate_model.outputs.deploy_approved == 'true'
+        run: |
+          MODEL_ID=${{ steps.extract_model.outputs.model_id }}
+          ENVIRONMENT=${{ github.event.inputs.deployment_environment || 'staging' }}
+          
+          echo "🚀 Deploying model $MODEL_ID to $ENVIRONMENT environment..."
+          
+          python -c "
+          from clearml import Model
+          import os
+          
+          # Get the trained model
+          model = Model(model_id='$MODEL_ID')
+          
+          # Add deployment tags
+          current_tags = model.get_all_tags() or []
+          deployment_tags = current_tags + ['deployed', '$ENVIRONMENT', 'guardian-ai']
+          model.set_tags(deployment_tags)
+          
+          # Publish the model for serving
+          model.publish()
+          
+          print(f'✅ Model {model.id} deployed to $ENVIRONMENT')
+          print(f'📊 Model Name: {model.name}')
+          print(f'🏷️  Tags: {deployment_tags}')
+          print(f'🔗 Model URL: https://app.clear.ml/projects/*/models/{model.id}')
+          "
+
+      - name: Create Deployment Record
+        if: steps.validate_model.outputs.deploy_approved == 'true'
+        run: |
+          MODEL_ID=${{ steps.extract_model.outputs.model_id }}
+          ACCURACY=${{ steps.extract_model.outputs.test_accuracy }}
+          ENVIRONMENT=${{ github.event.inputs.deployment_environment || 'staging' }}
+          
+          # Create deployment metadata
+          cat > deployment_record.json << EOF
+          {
+            "deployment_id": "${{ github.run_id }}",
+            "model_id": "$MODEL_ID",
+            "accuracy": $ACCURACY,
+            "environment": "$ENVIRONMENT",
+            "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "commit_sha": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "workflow_run": "${{ github.run_id }}"
+          }
+          EOF
+          
+          echo "📝 Deployment record created:"
+          cat deployment_record.json
+
+      - name: Upload Deployment Artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-artifacts-${{ github.run_id }}
+          path: |
+            pipeline_output.log
+            deployment_record.json
+            training_metrics.png
+            *.pth
+            *.png
+          retention-days: 90
+
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo "## 🚀 Guardian AI Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.validate_model.outputs.deploy_approved }}" == "true" ]; then
+            echo "### ✅ Deployment Successful" >> $GITHUB_STEP_SUMMARY
+            echo "- **Model ID**: ${{ steps.extract_model.outputs.model_id }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Test Accuracy**: ${{ steps.extract_model.outputs.test_accuracy }}%" >> $GITHUB_STEP_SUMMARY
+            echo "- **Environment**: ${{ github.event.inputs.deployment_environment || 'staging' }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Deployed At**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Deployment Blocked" >> $GITHUB_STEP_SUMMARY
+            echo "- **Reason**: Model accuracy below threshold" >> $GITHUB_STEP_SUMMARY
+            echo "- **Accuracy**: ${{ steps.extract_model.outputs.test_accuracy }}%" >> $GITHUB_STEP_SUMMARY
+            echo "- **Required**: ≥75.0%" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [ClearML Dashboard](https://app.clear.ml/)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Model Registry](https://app.clear.ml/projects/Guardian_Training/models)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Pipeline Logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+
+  notify_deployment:
+    needs: train_and_deploy
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Notify Deployment Status
+        run: |
+          if [ "${{ needs.train_and_deploy.result }}" == "success" ]; then
+            echo "🎉 Guardian AI model deployed successfully!"
+            echo "Model ID: ${{ needs.train_and_deploy.outputs.model_id }}"
+            echo "Accuracy: ${{ needs.train_and_deploy.outputs.test_accuracy }}%"
+          else
+            echo "❌ Deployment failed or was blocked"
+          fi 

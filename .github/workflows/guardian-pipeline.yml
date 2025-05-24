@@ -1,0 +1,103 @@
+name: Run Guardian AI Pipeline
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  run_guardian_pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180  # 3 hours timeout for training
+
+    env:
+      CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
+      CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
+      CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Debug ClearML Environment
+        run: |
+          echo "🔍 Checking ClearML configuration..."
+          echo "CLEARML_API_HOST=$CLEARML_API_HOST"
+          if [ -z "$CLEARML_API_HOST" ]; then 
+            echo "❌ CLEARML_API_HOST is empty!"
+            exit 1
+          fi
+          if [ -z "$CLEARML_API_ACCESS_KEY" ]; then 
+            echo "❌ CLEARML_API_ACCESS_KEY is empty!"
+            exit 1
+          fi
+          echo "✅ ClearML environment variables are set"
+          
+          # Test ClearML connection
+          python -c "
+          from clearml import Task
+          print('✅ ClearML import successful')
+          try:
+              # Test connection without creating a task
+              from clearml.backend_api.session.client import APIClient
+              client = APIClient()
+              print('✅ ClearML API connection successful')
+          except Exception as e:
+              print(f'❌ ClearML connection failed: {e}')
+              exit(1)
+          "
+
+      - name: Run Guardian Pipeline
+        run: |
+          echo "🚀 Starting Guardian AI Training Pipeline..."
+          python Guardian_pipeline.py
+
+      - name: Upload Training Artifacts
+        if: always()  # Upload even if pipeline fails
+        uses: actions/upload-artifact@v3
+        with:
+          name: training-artifacts
+          path: |
+            training_metrics.png
+            *.pth
+            *.png
+            evaluation_outputs/
+          retention-days: 30
+
+      - name: Pipeline Summary
+        if: always()
+        run: |
+          echo "## 🎯 Guardian AI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.head_ref || github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Training Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f "training_metrics.png" ]; then
+            echo "✅ Training metrics generated" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Training metrics not found" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [ClearML Dashboard](https://app.clear.ml/)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Training Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY 
