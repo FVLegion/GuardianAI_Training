@@ -42,8 +42,34 @@ def download_and_verify_clearml_dataset(
                 only_completed=True
             )
             
+            # If not found with only_completed=True, try without it
+            if not remote_dataset:
+                comp_logger.warning(f"Dataset not found with only_completed=True, trying without...")
+                remote_dataset = Dataset.get(
+                    dataset_name=dataset_name,
+                    dataset_project=dataset_project,
+                    only_completed=False
+                )
+            
             if not remote_dataset:
                 comp_logger.error(f"ClearML dataset '{dataset_name}' not found in project '{dataset_project}'")
+                
+                # Try to list available datasets for debugging
+                try:
+                    comp_logger.info("Attempting to list available datasets...")
+                    datasets = Dataset.list_datasets(dataset_project=dataset_project)
+                    if datasets:
+                        comp_logger.info(f"Found {len(datasets)} datasets in project:")
+                        for i, ds in enumerate(datasets[:3]):  # Show first 3
+                            if hasattr(ds, 'name'):
+                                comp_logger.info(f"  {i+1}. {ds.name} (ID: {ds.id})")
+                            elif isinstance(ds, dict):
+                                comp_logger.info(f"  {i+1}. {ds.get('name', 'Unknown')} (ID: {ds.get('id', 'Unknown')})")
+                    else:
+                        comp_logger.info("No datasets found in project")
+                except Exception as list_error:
+                    comp_logger.error(f"Failed to list datasets: {list_error}")
+                
                 return None
             
             comp_logger.info(f"Found ClearML dataset: {remote_dataset.id}")
@@ -1560,11 +1586,35 @@ def guardian_training_pipeline():
             if datasets:
                 print(f"Available datasets in project '{dataset_project}':")
                 for ds in datasets[:5]:  # Show first 5
-                    print(f"  - {ds.name} (ID: {ds.id})")
+                    # Handle both dict and object formats
+                    if hasattr(ds, 'name'):
+                        print(f"  - {ds.name} (ID: {ds.id})")
+                    elif isinstance(ds, dict):
+                        print(f"  - {ds.get('name', 'Unknown')} (ID: {ds.get('id', 'Unknown')})")
+                    else:
+                        print(f"  - {str(ds)}")
             else:
                 print(f"No datasets found in project '{dataset_project}'")
+                
+            # Also try to get the specific dataset to see what error occurs
+            print(f"\nTrying to get dataset '{dataset_name}' specifically...")
+            try:
+                test_dataset = Dataset.get(
+                    dataset_name=dataset_name,
+                    dataset_project=dataset_project,
+                    only_completed=True
+                )
+                if test_dataset:
+                    print(f"✅ Found dataset: {test_dataset.id}")
+                else:
+                    print(f"❌ Dataset.get() returned None")
+            except Exception as get_error:
+                print(f"❌ Error getting dataset: {get_error}")
+                
         except Exception as e:
             print(f"Could not list datasets: {e}")
+            import traceback
+            traceback.print_exc()
         
         raise ValueError(error_msg)
     

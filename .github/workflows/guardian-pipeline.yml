@@ -56,7 +56,6 @@ jobs:
           from clearml import Task
           print('✅ ClearML import successful')
           try:
-              # Test connection without creating a task
               from clearml.backend_api.session.client import APIClient
               client = APIClient()
               print('✅ ClearML API connection successful')
@@ -64,6 +63,11 @@ jobs:
               print(f'❌ ClearML connection failed: {e}')
               exit(1)
           "
+
+      - name: Test ClearML Dataset Access
+        run: |
+          echo "🧪 Testing ClearML dataset access..."
+          python test_clearml_dataset.py
 
       - name: Run Guardian Pipeline
         run: |
