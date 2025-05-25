@@ -147,11 +147,87 @@ def download_and_verify_clearml_dataset(
                                 dataset_root = item
                                 comp_logger.info(f"Found nested dataset structure in: {item}")
                                 break
+                    
+                    # If still not found, try to find any directory with JSON files
+                    if dataset_root is None:
+                        comp_logger.warning("Standard structure not found, looking for any directories with JSON files...")
+                        for item in temp_download_path.rglob("*"):
+                            if item.is_dir():
+                                json_files = list(item.glob("*_keypoints.json"))
+                                if json_files:
+                                    # Check if this directory name matches any expected action
+                                    dir_name = item.name
+                                    if dir_name in expected_actions:
+                                        comp_logger.info(f"Found action directory with JSON files: {item}")
+                                        # Use the parent of this directory as dataset root
+                                        potential_root = item.parent
+                                        if dataset_root is None:
+                                            dataset_root = potential_root
+                                            comp_logger.info(f"Using {potential_root} as dataset root")
                 
+                # Final fallback: try to reorganize files if we find JSON files
                 if dataset_root is None:
-                    comp_logger.error("Could not find valid dataset structure in downloaded files")
-                    comp_logger.info(f"Contents of download path: {list(temp_download_path.iterdir())}")
-                    return None
+                    comp_logger.warning("No standard structure found, attempting to reorganize files...")
+                    json_files = list(temp_download_path.rglob("*_keypoints.json"))
+                    if json_files:
+                        comp_logger.info(f"Found {len(json_files)} keypoint files, attempting reorganization...")
+                        
+                        # Create a reorganized structure
+                        reorganized_root = temp_download_path / "reorganized"
+                        reorganized_root.mkdir(exist_ok=True)
+                        
+                        # Try to categorize files by their path or name
+                        for json_file in json_files:
+                            file_path_str = str(json_file).lower()
+                            target_action = None
+                            
+                            # Try to match action names in the file path
+                            for action in expected_actions:
+                                if action.lower().replace(" ", "").replace("_", "") in file_path_str.replace(" ", "").replace("_", ""):
+                                    target_action = action
+                                    break
+                            
+                            if target_action is None:
+                                # Default to first action if we can't determine
+                                target_action = expected_actions[0]
+                                comp_logger.warning(f"Could not determine action for {json_file}, using {target_action}")
+                            
+                            # Create action directory and copy file
+                            action_dir = reorganized_root / target_action
+                            action_dir.mkdir(exist_ok=True)
+                            
+                            import shutil
+                            shutil.copy2(json_file, action_dir / json_file.name)
+                        
+                        dataset_root = reorganized_root
+                        comp_logger.info(f"Reorganized dataset structure created at {dataset_root}")
+                    else:
+                        comp_logger.error("No keypoint JSON files found in download")
+                        
+                        # Add detailed debugging information
+                        comp_logger.info(f"Contents of download path: {list(temp_download_path.iterdir())}")
+                        
+                        # More detailed debugging - show full directory tree
+                        comp_logger.info("Detailed directory structure:")
+                        for root, dirs, files in os.walk(temp_download_path):
+                            level = root.replace(str(temp_download_path), '').count(os.sep)
+                            indent = ' ' * 2 * level
+                            comp_logger.info(f"{indent}{os.path.basename(root)}/")
+                            subindent = ' ' * 2 * (level + 1)
+                            for file in files[:5]:  # Show first 5 files per directory
+                                comp_logger.info(f"{subindent}{file}")
+                            if len(files) > 5:
+                                comp_logger.info(f"{subindent}... and {len(files) - 5} more files")
+                        
+                        # Show all files to understand what was downloaded
+                        all_files = list(temp_download_path.rglob("*"))
+                        comp_logger.info(f"Total files/directories found: {len(all_files)}")
+                        for i, file_path in enumerate(all_files[:20]):  # Show first 20
+                            rel_path = file_path.relative_to(temp_download_path)
+                            file_type = "DIR" if file_path.is_dir() else "FILE"
+                            comp_logger.info(f"  {i+1}. [{file_type}] {rel_path}")
+                        if len(all_files) > 20:
+                            comp_logger.info(f"  ... and {len(all_files) - 20} more items")
                 
                 # Copy the dataset structure
                 for action in expected_actions:
@@ -573,8 +649,6 @@ def train_bilstm(
                     normalized_frame_keypoints[:, 1] = alpha * normalized_frame_keypoints[:, 1] + (1 - alpha) * previous_frame[:, 1]
 
                 previous_frame = normalized_frame_keypoints
-
-                # Flatten and remove confidence scores
                 normalized_frame_keypoints = normalized_frame_keypoints[:, :2].flatten()
                 all_frames_keypoints.append(normalized_frame_keypoints)
 
@@ -890,7 +964,7 @@ def bilstm_hyperparam_optimizer(
     dataset_path: str,
     input_size: int,
     num_classes: int,
-    total_max_trials: int = 50  # Increased for richer visualization
+    total_max_trials: int = 30  # Increased for richer visualization
 ):
     """
     Enhanced hyperparameter optimization with extensive search space for rich visualization.
