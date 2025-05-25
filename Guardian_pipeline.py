@@ -122,7 +122,7 @@ def prepare_data(dataset_path: str):
         import os
         import torch
 
-        # Embedded dataset class
+                # Embedded dataset class
         class PoseDataset(Dataset):
             def __init__(self, data_dir, action_classes, max_frames=40):
                 self.data_dir = data_dir
@@ -142,16 +142,16 @@ def prepare_data(dataset_path: str):
                     for filename in os.listdir(action_dir):
                         if filename.endswith("_keypoints.json"):
                             filepath = os.path.join(action_dir, filename)
-                        try:
-                            with open(filepath, 'r') as f:
-                                keypoints_data = json.load(f)
-                                normalized_keypoints = self.process_keypoints(keypoints_data)
-                                if normalized_keypoints is not None:
-                                    data.append(normalized_keypoints)
-                                    labels.append(i)
-                        except (json.JSONDecodeError, FileNotFoundError) as e:
-                            print(f"Error loading or processing {filepath}: {e}")
-                            continue
+                            try:
+                                with open(filepath, 'r') as f:
+                                    keypoints_data = json.load(f)
+                                    normalized_keypoints = self.process_keypoints(keypoints_data)
+                                    if normalized_keypoints is not None:
+                                        data.append(normalized_keypoints)
+                                        labels.append(i)
+                            except (json.JSONDecodeError, FileNotFoundError) as e:
+                                print(f"Error loading or processing {filepath}: {e}")
+                                continue
                 
                 return data, labels
 
