@@ -39,6 +39,7 @@ evaluation_outputs/
 # ClearML
 clearml.conf
 .clearml/
+*.conf
 
 # Data directories
 data/
