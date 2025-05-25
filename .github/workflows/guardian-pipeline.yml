@@ -1,9 +1,15 @@
-name: Run Guardian AI Pipeline
+name: Run Guardian AI Pipeline (Cloud - Disabled)
 
+# Disabled due to ClearML dataset access issues in GitHub Actions
+# Use guardian-local-trigger.yml instead for local GPU execution
+# on:
+#   pull_request:
+#     branches: [main]
+#   workflow_dispatch:  # Allow manual triggering
+
+# Uncomment the 'on' section above to re-enable cloud execution
 on:
-  pull_request:
-    branches: [main]
-  workflow_dispatch:  # Allow manual triggering
+  workflow_dispatch:  # Manual triggering only
 
 jobs:
   run_guardian_pipeline:
@@ -16,6 +22,19 @@ jobs:
       CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
 
     steps:
+      - name: ⚠️ Cloud Execution Notice
+        run: |
+          echo "⚠️  WARNING: Cloud execution is disabled due to ClearML dataset access issues"
+          echo "🏠 Use local GPU execution instead:"
+          echo "   1. Run: start_local_listener.bat (Windows) or python local_pipeline_listener.py"
+          echo "   2. Trigger via: guardian-local-trigger.yml workflow"
+          echo "   3. See: LOCAL_EXECUTION_GUIDE.md for setup instructions"
+          echo ""
+          echo "🔧 To re-enable cloud execution:"
+          echo "   1. Fix ClearML dataset structure issues"
+          echo "   2. Uncomment the 'on' triggers in this workflow"
+          echo "   3. Test thoroughly before production use"
+
       - name: Checkout code
         uses: actions/checkout@v4
 

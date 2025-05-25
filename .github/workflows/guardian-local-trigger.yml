@@ -1,0 +1,80 @@
+name: Trigger Local Guardian AI Pipeline
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  trigger_local_execution:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10  # Quick trigger job
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Notify Local Machine
+        run: |
+          echo "🚀 Triggering local Guardian AI pipeline execution..."
+          echo "📋 Pipeline Details:"
+          echo "  - Repository: ${{ github.repository }}"
+          echo "  - Branch: ${{ github.head_ref || github.ref_name }}"
+          echo "  - Commit: ${{ github.sha }}"
+          echo "  - Event: ${{ github.event_name }}"
+          echo "  - Trigger Time: $(date -u)"
+          
+          # Create a trigger file with execution details
+          cat > pipeline_trigger.json << EOF
+          {
+            "repository": "${{ github.repository }}",
+            "branch": "${{ github.head_ref || github.ref_name }}",
+            "commit": "${{ github.sha }}",
+            "event": "${{ github.event_name }}",
+            "trigger_time": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "run_id": "${{ github.run_id }}",
+            "run_number": "${{ github.run_number }}"
+          }
+          EOF
+          
+          echo "📄 Trigger file created:"
+          cat pipeline_trigger.json
+
+      - name: Send Webhook to Local Machine (Optional)
+        run: |
+          echo "🔔 Webhook notification (configure your local webhook endpoint):"
+          echo "POST to your local webhook endpoint with the following payload:"
+          cat pipeline_trigger.json
+          
+          # If you have a local webhook endpoint, uncomment and configure:
+          # curl -X POST http://YOUR_LOCAL_IP:PORT/webhook \
+          #   -H "Content-Type: application/json" \
+          #   -d @pipeline_trigger.json
+
+      - name: Upload Trigger Information
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-trigger-${{ github.run_number }}
+          path: pipeline_trigger.json
+          retention-days: 7
+
+      - name: Pipeline Instructions
+        run: |
+          echo "## 🎯 Local Pipeline Execution Triggered" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Execution Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.head_ref || github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Event**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🖥️ Local Execution Instructions" >> $GITHUB_STEP_SUMMARY
+          echo "1. Pull the latest changes: \`git pull origin ${{ github.head_ref || github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "2. Activate your environment: \`conda activate guardian_env\` (or your env name)" >> $GITHUB_STEP_SUMMARY
+          echo "3. Run the pipeline: \`python Guardian_pipeline.py\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔧 Automated Local Execution" >> $GITHUB_STEP_SUMMARY
+          echo "To automate this process, run the local listener script: \`python local_pipeline_listener.py\`" >> $GITHUB_STEP_SUMMARY 
