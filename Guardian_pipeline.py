@@ -30,46 +30,11 @@ def download_and_verify_clearml_dataset(
     try:
         # Create target directory if it doesn't exist
         local_path_obj.mkdir(parents=True, exist_ok=True)
+        comp_logger.info(f"Target directory created/verified: {local_path_obj}")
         
-        # Check if local dataset exists first
-        if local_path_obj.exists() and local_path_obj.is_dir():
-            local_files = list(local_path_obj.rglob('*'))
-            if local_files:  # If local data exists
-                comp_logger.info(f"Found local dataset with {len(local_files)} files. Checking ClearML...")
-                
-                try:
-                    # Try to get dataset from ClearML
-                    remote_dataset = Dataset.get(
-                        dataset_name=dataset_name,
-                        dataset_project=dataset_project,
-                        only_completed=True
-                    )
-                    
-                    if remote_dataset:
-                        comp_logger.info("Remote dataset found. Using local dataset.")
-                        return str(local_path_obj)
-                    
-                except Exception as e:
-                    comp_logger.warning(f"Remote dataset not found: {e}")
-                
-                # Create dataset in ClearML from local data
-                comp_logger.info("Creating new dataset in ClearML from local data...")
-                try:
-                    new_dataset = Dataset.create(
-                        dataset_name=dataset_name,
-                        dataset_project=dataset_project
-                    )
-                    new_dataset.add_files(local_path_obj)
-                    new_dataset.upload()
-                    new_dataset.finalize()
-                    comp_logger.info("Local dataset uploaded to ClearML successfully.")
-                    return str(local_path_obj)
-                except Exception as upload_error:
-                    comp_logger.warning(f"Failed to upload to ClearML: {upload_error}")
-                    comp_logger.info("Proceeding with local dataset only.")
-                    return str(local_path_obj)
+        # Try to get dataset from ClearML first
+        comp_logger.info(f"Attempting to get dataset '{dataset_name}' from project '{dataset_project}'")
         
-        # Try to get dataset from ClearML if no local data
         try:
             remote_dataset = Dataset.get(
                 dataset_name=dataset_name,
@@ -78,49 +43,148 @@ def download_and_verify_clearml_dataset(
             )
             
             if not remote_dataset:
-                comp_logger.error(f"ClearML dataset '{dataset_name}' not found in project '{dataset_project}' and no local data available")
+                comp_logger.error(f"ClearML dataset '{dataset_name}' not found in project '{dataset_project}'")
                 return None
-
+            
+            comp_logger.info(f"Found ClearML dataset: {remote_dataset.id}")
+            
+            # Check if local dataset already exists and is valid
+            expected_actions = ["Falling", "No Action", "Waving"]
+            local_valid = True
+            
+            for action in expected_actions:
+                action_dir = local_path_obj / action
+                if not action_dir.exists():
+                    local_valid = False
+                    break
+                # Check if directory has keypoint files
+                json_files = list(action_dir.glob("*_keypoints.json"))
+                if not json_files:
+                    local_valid = False
+                    break
+            
+            if local_valid:
+                comp_logger.info("Valid local dataset found, using existing files")
+                return str(local_path_obj)
+            
             # Download dataset from ClearML
             comp_logger.info("Downloading dataset from ClearML...")
             temp_download_path_str = remote_dataset.get_local_copy()
+            
             if not temp_download_path_str:
                 comp_logger.error("Failed to get local copy of dataset")
                 return None
                 
             temp_download_path = pathlib.Path(temp_download_path_str).resolve()
-            if not temp_download_path.exists() or not temp_download_path.is_dir():
-                comp_logger.error("Invalid temporary download path")
+            comp_logger.info(f"Dataset downloaded to temporary path: {temp_download_path}")
+            
+            if not temp_download_path.exists():
+                comp_logger.error(f"Temporary download path does not exist: {temp_download_path}")
                 return None
 
-            # Move/copy files to target location
+            # Clear target directory first
+            if local_path_obj.exists():
+                import shutil
+                shutil.rmtree(local_path_obj)
+                local_path_obj.mkdir(parents=True, exist_ok=True)
+                comp_logger.info(f"Cleared and recreated target directory: {local_path_obj}")
+
+            # Copy/move files from temp to target location
             moved_items_count = 0
             copied_items_count = 0
-            for item_name in os.listdir(temp_download_path):
-                source_item_path = temp_download_path / item_name
-                destination_item_path = local_path_obj / item_name
-        
-                if destination_item_path.exists():
-                    if destination_item_path.is_dir():
-                        shutil.rmtree(destination_item_path)
-                    else:
-                        destination_item_path.unlink(missing_ok=True) 
-                
-                if source_item_path.is_dir():
-                    shutil.move(str(source_item_path), str(destination_item_path))
-                    moved_items_count += 1
-                else: 
-                    shutil.copy2(str(source_item_path), str(destination_item_path))
-                    copied_items_count += 1
-
-            # Cleanup temporary directory
-            shutil.rmtree(temp_download_path)
-            comp_logger.info(f"Dataset downloaded successfully with {moved_items_count} directories and {copied_items_count} files")
             
-            return str(local_path_obj) if local_path_obj.exists() and local_path_obj.is_dir() else None
+            # Check if temp path is a directory or contains the dataset structure
+            if temp_download_path.is_dir():
+                # Look for the dataset structure in the downloaded path
+                dataset_root = None
+                
+                # Check if the temp path directly contains action directories
+                action_dirs_found = []
+                for action in expected_actions:
+                    action_path = temp_download_path / action
+                    if action_path.exists() and action_path.is_dir():
+                        action_dirs_found.append(action)
+                
+                if len(action_dirs_found) == len(expected_actions):
+                    # Direct structure found
+                    dataset_root = temp_download_path
+                    comp_logger.info("Found direct dataset structure in download")
+                else:
+                    # Look for nested structure
+                    for item in temp_download_path.iterdir():
+                        if item.is_dir():
+                            nested_actions = []
+                            for action in expected_actions:
+                                if (item / action).exists():
+                                    nested_actions.append(action)
+                            if len(nested_actions) == len(expected_actions):
+                                dataset_root = item
+                                comp_logger.info(f"Found nested dataset structure in: {item}")
+                                break
+                
+                if dataset_root is None:
+                    comp_logger.error("Could not find valid dataset structure in downloaded files")
+                    comp_logger.info(f"Contents of download path: {list(temp_download_path.iterdir())}")
+                    return None
+                
+                # Copy the dataset structure
+                for action in expected_actions:
+                    source_action_dir = dataset_root / action
+                    target_action_dir = local_path_obj / action
+                    
+                    if source_action_dir.exists():
+                        import shutil
+                        shutil.copytree(source_action_dir, target_action_dir)
+                        json_files = list(target_action_dir.glob("*_keypoints.json"))
+                        comp_logger.info(f"Copied {action} directory with {len(json_files)} keypoint files")
+                        copied_items_count += len(json_files)
+                    else:
+                        comp_logger.warning(f"Action directory not found in dataset: {action}")
+                        # Create empty directory to prevent errors
+                        target_action_dir.mkdir(exist_ok=True)
+                
+                # Cleanup temporary directory
+                import shutil
+                shutil.rmtree(temp_download_path, ignore_errors=True)
+                comp_logger.info(f"Dataset copied successfully with {copied_items_count} files")
+                
+            else:
+                comp_logger.error(f"Downloaded path is not a directory: {temp_download_path}")
+                return None
+            
+            # Verify the final structure
+            final_valid = True
+            total_files = 0
+            for action in expected_actions:
+                action_dir = local_path_obj / action
+                if action_dir.exists():
+                    json_files = list(action_dir.glob("*_keypoints.json"))
+                    total_files += len(json_files)
+                    comp_logger.info(f"Verified {action}: {len(json_files)} keypoint files")
+                    if len(json_files) == 0:
+                        comp_logger.warning(f"No keypoint files found in {action}")
+                else:
+                    comp_logger.error(f"Action directory missing after download: {action}")
+                    final_valid = False
+            
+            if not final_valid or total_files == 0:
+                comp_logger.error("Dataset verification failed after download")
+                return None
+            
+            comp_logger.info(f"Dataset download and verification completed successfully")
+            comp_logger.info(f"Total keypoint files: {total_files}")
+            return str(local_path_obj)
             
         except Exception as remote_error:
-            comp_logger.error(f"Failed to access remote dataset: {remote_error}")
+            comp_logger.error(f"Failed to access or download ClearML dataset: {remote_error}", exc_info=True)
+            
+            # Fallback: check if local data exists
+            if local_path_obj.exists() and local_path_obj.is_dir():
+                local_files = list(local_path_obj.rglob('*_keypoints.json'))
+                if local_files:
+                    comp_logger.warning("Using existing local dataset as fallback")
+                    return str(local_path_obj)
+            
             return None
 
     except Exception as e:
@@ -155,26 +219,51 @@ def prepare_data(dataset_path: str):
             def load_data(self):
                 data = []
                 labels = []
+                
+                # Create action directories if they don't exist (for CI/CD environments)
                 for i, action in enumerate(self.action_classes):
                     action_dir = os.path.join(self.data_dir, action)
                     if not os.path.exists(action_dir):
                         print(f"Warning: Directory not found: {action_dir}")
+                        print(f"Creating directory: {action_dir}")
+                        try:
+                            os.makedirs(action_dir, exist_ok=True)
+                            print(f"✅ Created directory: {action_dir}")
+                            # Directory is empty, so no files to process
+                            continue
+                        except Exception as e:
+                            print(f"❌ Failed to create directory {action_dir}: {e}")
+                            continue
+
+                    json_files = [f for f in os.listdir(action_dir) if f.endswith("_keypoints.json")]
+                    if not json_files:
+                        print(f"Warning: No keypoint files found in {action_dir}")
                         continue
+                    
+                    print(f"Found {len(json_files)} keypoint files in {action}")
+                    
+                    for filename in json_files:
+                        filepath = os.path.join(action_dir, filename)
+                        try:
+                            with open(filepath, 'r') as f:
+                                keypoints_data = json.load(f)
+                                normalized_keypoints = self.process_keypoints(keypoints_data)
+                                if normalized_keypoints is not None:
+                                    data.append(normalized_keypoints)
+                                    labels.append(i)
+                        except (json.JSONDecodeError, FileNotFoundError) as e:
+                            print(f"Error loading or processing {filepath}: {e}")
+                            continue
 
-                    for filename in os.listdir(action_dir):
-                        if filename.endswith("_keypoints.json"):
-                            filepath = os.path.join(action_dir, filename)
-                            try:
-                                with open(filepath, 'r') as f:
-                                    keypoints_data = json.load(f)
-                                    normalized_keypoints = self.process_keypoints(keypoints_data)
-                                    if normalized_keypoints is not None:
-                                        data.append(normalized_keypoints)
-                                        labels.append(i)
-                            except (json.JSONDecodeError, FileNotFoundError) as e:
-                                print(f"Error loading or processing {filepath}: {e}")
-                                continue
-
+                if not data:
+                    print(f"❌ No valid data found in dataset directory: {self.data_dir}")
+                    print(f"Expected structure:")
+                    print(f"  {self.data_dir}/")
+                    for action in self.action_classes:
+                        print(f"    ├── {action}/")
+                        print(f"    │   ├── *_keypoints.json")
+                    print(f"\nPlease ensure your dataset is properly structured and contains keypoint files.")
+                
                 return data, labels
 
             def process_keypoints(self, keypoints_data):
@@ -370,26 +459,51 @@ def train_bilstm(
         def load_data(self):
             data = []
             labels = []
+            
+            # Create action directories if they don't exist (for CI/CD environments)
             for i, action in enumerate(self.action_classes):
                 action_dir = os.path.join(self.data_dir, action)
                 if not os.path.exists(action_dir):
                     print(f"Warning: Directory not found: {action_dir}")
+                    print(f"Creating directory: {action_dir}")
+                    try:
+                        os.makedirs(action_dir, exist_ok=True)
+                        print(f"✅ Created directory: {action_dir}")
+                        # Directory is empty, so no files to process
+                        continue
+                    except Exception as e:
+                        print(f"❌ Failed to create directory {action_dir}: {e}")
+                        continue
+
+                json_files = [f for f in os.listdir(action_dir) if f.endswith("_keypoints.json")]
+                if not json_files:
+                    print(f"Warning: No keypoint files found in {action_dir}")
                     continue
+                    
+                print(f"Found {len(json_files)} keypoint files in {action}")
+                
+                for filename in json_files:
+                    filepath = os.path.join(action_dir, filename)
+                    try:
+                        with open(filepath, 'r') as f:
+                            keypoints_data = json.load(f)
+                            normalized_keypoints = self.process_keypoints(keypoints_data)
+                            if normalized_keypoints is not None:
+                                data.append(normalized_keypoints)
+                                labels.append(i)
+                    except (json.JSONDecodeError, FileNotFoundError) as e:
+                        print(f"Error loading or processing {filepath}: {e}")
+                        continue
 
-                for filename in os.listdir(action_dir):
-                    if filename.endswith("_keypoints.json"):
-                        filepath = os.path.join(action_dir, filename)
-                        try:
-                            with open(filepath, 'r') as f:
-                                keypoints_data = json.load(f)
-                                normalized_keypoints = self.process_keypoints(keypoints_data)
-                                if normalized_keypoints is not None:
-                                    data.append(normalized_keypoints)
-                                    labels.append(i)
-                        except (json.JSONDecodeError, FileNotFoundError) as e:
-                            print(f"Error loading or processing {filepath}: {e}")
-                            continue
-
+            if not data:
+                print(f"❌ No valid data found in dataset directory: {self.data_dir}")
+                print(f"Expected structure:")
+                print(f"  {self.data_dir}/")
+                for action in self.action_classes:
+                    print(f"    ├── {action}/")
+                    print(f"    │   ├── *_keypoints.json")
+                print(f"\nPlease ensure your dataset is properly structured and contains keypoint files.")
+                
             return data, labels
 
         def process_keypoints(self, keypoints_data):
@@ -1039,26 +1153,51 @@ def evaluate_model(
         def load_data(self):
             data = []
             labels = []
+            
+            # Create action directories if they don't exist (for CI/CD environments)
             for i, action in enumerate(self.action_classes):
                 action_dir = os.path.join(self.data_dir, action)
                 if not os.path.exists(action_dir):
                     print(f"Warning: Directory not found: {action_dir}")
+                    print(f"Creating directory: {action_dir}")
+                    try:
+                        os.makedirs(action_dir, exist_ok=True)
+                        print(f"✅ Created directory: {action_dir}")
+                        # Directory is empty, so no files to process
+                        continue
+                    except Exception as e:
+                        print(f"❌ Failed to create directory {action_dir}: {e}")
+                        continue
+
+                json_files = [f for f in os.listdir(action_dir) if f.endswith("_keypoints.json")]
+                if not json_files:
+                    print(f"Warning: No keypoint files found in {action_dir}")
                     continue
+                    
+                print(f"Found {len(json_files)} keypoint files in {action}")
+                
+                for filename in json_files:
+                    filepath = os.path.join(action_dir, filename)
+                    try:
+                        with open(filepath, 'r') as f:
+                            keypoints_data = json.load(f)
+                            normalized_keypoints = self.process_keypoints(keypoints_data)
+                            if normalized_keypoints is not None:
+                                data.append(normalized_keypoints)
+                                labels.append(i)
+                    except (json.JSONDecodeError, FileNotFoundError) as e:
+                        print(f"Error loading or processing {filepath}: {e}")
+                        continue
 
-                for filename in os.listdir(action_dir):
-                    if filename.endswith("_keypoints.json"):
-                        filepath = os.path.join(action_dir, filename)
-                        try:
-                            with open(filepath, 'r') as f:
-                                keypoints_data = json.load(f)
-                                normalized_keypoints = self.process_keypoints(keypoints_data)
-                                if normalized_keypoints is not None:
-                                    data.append(normalized_keypoints)
-                                    labels.append(i)
-                        except (json.JSONDecodeError, FileNotFoundError) as e:
-                            print(f"Error loading or processing {filepath}: {e}")
-                            continue
-
+            if not data:
+                print(f"❌ No valid data found in dataset directory: {self.data_dir}")
+                print(f"Expected structure:")
+                print(f"  {self.data_dir}/")
+                for action in self.action_classes:
+                    print(f"    ├── {action}/")
+                    print(f"    │   ├── *_keypoints.json")
+                print(f"\nPlease ensure your dataset is properly structured and contains keypoint files.")
+                
             return data, labels
 
         def process_keypoints(self, keypoints_data):
@@ -1399,14 +1538,62 @@ def guardian_training_pipeline():
 
     # Step 1: Download and verify dataset
     logging.info("Starting dataset download and verification...")
+    logging.info(f"Target dataset path: {dataset_path}")
+    logging.info(f"Dataset name: {dataset_name}")
+    logging.info(f"Dataset project: {dataset_project}")
+    
     dataset_path_output = download_and_verify_clearml_dataset(
         dataset_name=dataset_name,
         dataset_project=dataset_project,
         local_target_path=str(dataset_path)
     )
+    
     if not dataset_path_output:
-        raise ValueError("Dataset step failed.")
+        error_msg = "Dataset step failed - could not download or verify ClearML dataset"
+        logging.error(error_msg)
+        print(f"❌ {error_msg}")
+        
+        # Try to provide helpful debugging information
+        try:
+            from clearml import Dataset
+            datasets = Dataset.list_datasets(dataset_project=dataset_project)
+            if datasets:
+                print(f"Available datasets in project '{dataset_project}':")
+                for ds in datasets[:5]:  # Show first 5
+                    print(f"  - {ds.name} (ID: {ds.id})")
+            else:
+                print(f"No datasets found in project '{dataset_project}'")
+        except Exception as e:
+            print(f"Could not list datasets: {e}")
+        
+        raise ValueError(error_msg)
+    
     logging.info(f"Dataset step completed. Using path: {dataset_path_output}")
+    
+    # Verify dataset structure after download
+    expected_actions = ["Falling", "No Action", "Waving"]
+    dataset_stats = {}
+    total_files = 0
+    
+    for action in expected_actions:
+        action_path = pathlib.Path(dataset_path_output) / action
+        if action_path.exists():
+            json_files = list(action_path.glob("*_keypoints.json"))
+            dataset_stats[action] = len(json_files)
+            total_files += len(json_files)
+            logging.info(f"Action '{action}': {len(json_files)} keypoint files")
+        else:
+            dataset_stats[action] = 0
+            logging.warning(f"Action directory missing: {action}")
+    
+    logging.info(f"Total keypoint files found: {total_files}")
+    
+    if total_files == 0:
+        error_msg = "No keypoint files found in dataset after download"
+        logging.error(error_msg)
+        print(f"❌ {error_msg}")
+        print(f"Dataset statistics: {dataset_stats}")
+        raise ValueError(error_msg)
 
     # Step 2: Prepare data (just for getting input_size and num_classes)
     logging.info("Starting data preparation step...")
@@ -1414,7 +1601,10 @@ def guardian_training_pipeline():
         dataset_path=dataset_path_output
     )
     if not dataset_path:
-        raise RuntimeError("Data preparation step failed.")
+        error_msg = "Data preparation step failed"
+        logging.error(error_msg)
+        print(f"❌ {error_msg}")
+        raise RuntimeError(error_msg)
     logging.info("Data preparation step completed.")
 
     # Step 3: Train baseline model
@@ -1425,7 +1615,10 @@ def guardian_training_pipeline():
         num_classes=num_classes
     )
     if not base_task_id:
-        raise RuntimeError("Training step failed.")
+        error_msg = "Training step failed"
+        logging.error(error_msg)
+        print(f"❌ {error_msg}")
+        raise RuntimeError(error_msg)
     logging.info(f"Training step completed. Base task ID: {base_task_id}")
 
     # Step 4: Hyperparameter optimization
