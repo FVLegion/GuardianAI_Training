@@ -1410,7 +1410,7 @@ def guardian_training_pipeline():
         dataset_path=dataset_path,
         input_size=input_size,
         num_classes=num_classes,
-        total_max_trials=50
+        total_max_trials= 30 
     )
     logging.info(f"HPO completed. Best task ID: {best_task_id}, Best model ID: {best_model_id}")
 
