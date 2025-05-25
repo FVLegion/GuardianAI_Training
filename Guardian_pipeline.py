@@ -31,16 +31,16 @@ def download_and_verify_clearml_dataset(
         local_path_obj.mkdir(parents=True, exist_ok=True)
         
         # Get dataset from ClearML
-            remote_dataset = Dataset.get(
-                dataset_name=dataset_name,
-                dataset_project=dataset_project,
-                only_completed=True
-                )
-            
-            if not remote_dataset:
-                comp_logger.error(f"ClearML dataset '{dataset_name}' not found in project '{dataset_project}'")
-                return None
-            
+        remote_dataset = Dataset.get(
+            dataset_name=dataset_name,
+            dataset_project=dataset_project,
+            only_completed=True
+        )
+        
+        if not remote_dataset:
+            comp_logger.error(f"ClearML dataset '{dataset_name}' not found in project '{dataset_project}'")
+            return None
+        
         # Check if local dataset exists
         if local_path_obj.exists() and local_path_obj.is_dir():
             local_files = set(f.name for f in local_path_obj.rglob('*') if f.is_file())
@@ -62,22 +62,22 @@ def download_and_verify_clearml_dataset(
                 new_dataset.finalize()
                 comp_logger.info("Local dataset uploaded as new version.")
                 return str(local_path_obj)
-            
+        
         # Download dataset if no local copy exists
-            comp_logger.info("Downloading dataset from ClearML...")
-            temp_download_path_str = remote_dataset.get_local_copy()
-            if not temp_download_path_str:
-                comp_logger.error("Failed to get local copy of dataset")
-                return None
-                
-            temp_download_path = pathlib.Path(temp_download_path_str).resolve()
+        comp_logger.info("Downloading dataset from ClearML...")
+        temp_download_path_str = remote_dataset.get_local_copy()
+        if not temp_download_path_str:
+            comp_logger.error("Failed to get local copy of dataset")
+            return None
+            
+        temp_download_path = pathlib.Path(temp_download_path_str).resolve()
         if not temp_download_path.exists() or not temp_download_path.is_dir():
             comp_logger.error("Invalid temporary download path")
-                return None
+            return None
 
         # Move/copy files to target location
-            moved_items_count = 0
-            copied_items_count = 0
+        moved_items_count = 0
+        copied_items_count = 0
         for item_name in os.listdir(temp_download_path):
             source_item_path = temp_download_path / item_name
             destination_item_path = local_path_obj / item_name
@@ -91,11 +91,11 @@ def download_and_verify_clearml_dataset(
             if source_item_path.is_dir():
                 shutil.move(str(source_item_path), str(destination_item_path))
                 moved_items_count += 1
-                    else:
+            else:
                 shutil.copy2(str(source_item_path), str(destination_item_path))
                 copied_items_count += 1
-                
-                # Cleanup temporary directory
+        
+        # Cleanup temporary directory
         shutil.rmtree(temp_download_path)
         comp_logger.info(f"Dataset downloaded successfully with {moved_items_count} directories and {copied_items_count} files")
         
@@ -137,11 +137,11 @@ def prepare_data(dataset_path: str):
                     action_dir = os.path.join(self.data_dir, action)
                     if not os.path.exists(action_dir):
                         print(f"Warning: Directory not found: {action_dir}")
-                            continue
+                        continue
 
                     for filename in os.listdir(action_dir):
                         if filename.endswith("_keypoints.json"):
-                        filepath = os.path.join(action_dir, filename)
+                            filepath = os.path.join(action_dir, filename)
                         try:
                             with open(filepath, 'r') as f:
                                 keypoints_data = json.load(f)
@@ -352,21 +352,21 @@ def train_bilstm(
                 action_dir = os.path.join(self.data_dir, action)
                 if not os.path.exists(action_dir):
                     print(f"Warning: Directory not found: {action_dir}")
-                        continue
+                    continue
 
                 for filename in os.listdir(action_dir):
                     if filename.endswith("_keypoints.json"):
-                    filepath = os.path.join(action_dir, filename)
-                    try:
-                        with open(filepath, 'r') as f:
-                            keypoints_data = json.load(f)
-                            normalized_keypoints = self.process_keypoints(keypoints_data)
-                            if normalized_keypoints is not None:
-                                data.append(normalized_keypoints)
-                                labels.append(i)
-                    except (json.JSONDecodeError, FileNotFoundError) as e:
-                        print(f"Error loading or processing {filepath}: {e}")
-                        continue
+                        filepath = os.path.join(action_dir, filename)
+                        try:
+                            with open(filepath, 'r') as f:
+                                keypoints_data = json.load(f)
+                                normalized_keypoints = self.process_keypoints(keypoints_data)
+                                if normalized_keypoints is not None:
+                                    data.append(normalized_keypoints)
+                                    labels.append(i)
+                        except (json.JSONDecodeError, FileNotFoundError) as e:
+                            print(f"Error loading or processing {filepath}: {e}")
+                            continue
                 
             return data, labels
 
@@ -1021,21 +1021,21 @@ def evaluate_model(
                 action_dir = os.path.join(self.data_dir, action)
                 if not os.path.exists(action_dir):
                     print(f"Warning: Directory not found: {action_dir}")
-                        continue
+                    continue
 
                 for filename in os.listdir(action_dir):
                     if filename.endswith("_keypoints.json"):
-                    filepath = os.path.join(action_dir, filename)
-                    try:
-                        with open(filepath, 'r') as f:
-                            keypoints_data = json.load(f)
-                            normalized_keypoints = self.process_keypoints(keypoints_data)
-                            if normalized_keypoints is not None:
-                                data.append(normalized_keypoints)
-                                labels.append(i)
-                    except (json.JSONDecodeError, FileNotFoundError) as e:
-                        print(f"Error loading or processing {filepath}: {e}")
-                        continue
+                        filepath = os.path.join(action_dir, filename)
+                        try:
+                            with open(filepath, 'r') as f:
+                                keypoints_data = json.load(f)
+                                normalized_keypoints = self.process_keypoints(keypoints_data)
+                                if normalized_keypoints is not None:
+                                    data.append(normalized_keypoints)
+                                    labels.append(i)
+                        except (json.JSONDecodeError, FileNotFoundError) as e:
+                            print(f"Error loading or processing {filepath}: {e}")
+                            continue
                 
             return data, labels
 
@@ -1438,18 +1438,18 @@ def guardian_training_pipeline():
 if __name__ == '__main__':
     logging.info("Running Guardian 🦾 pipeline locally...")
     
-        # run_locally() executes the pipeline defined by decorators in the current process
-        # This allows it to appear in PIPELINES section while running locally
-        PipelineDecorator.run_locally()
-        
-        # Start the pipeline execution
-        result = guardian_training_pipeline()
-        
-        # Calculate execution time
-        finish_time = time.time()
-        elapsed_time = (finish_time - start_time) / 60  # Convert to minutes
+    # run_locally() executes the pipeline defined by decorators in the current process
+    # This allows it to appear in PIPELINES section while running locally
+    PipelineDecorator.run_locally()
+    
+    # Start the pipeline execution
+    result = guardian_training_pipeline()
+    
+    # Calculate execution time
+    finish_time = time.time()
+    elapsed_time = (finish_time - start_time) / 60  # Convert to minutes
 
-        print(f"\n🎉 Guardian AI Pipeline Completed Successfully! 🎉")
-        print(f"⏱️  Total Execution Time: {elapsed_time:.2f} minutes")
-        print(f"🎯 Final Test Accuracy: {result:.2f}%")
+    print(f"\n🎉 Guardian AI Pipeline Completed Successfully! 🎉")
+    print(f"⏱️  Total Execution Time: {elapsed_time:.2f} minutes")
+    print(f"🎯 Final Test Accuracy: {result:.2f}%")
     
