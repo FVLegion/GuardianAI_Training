@@ -69,16 +69,59 @@ jobs:
           echo "🧪 Testing ClearML dataset access..."
           python test_clearml_dataset.py
 
+      - name: Pre-download Dataset (Optional Cache)
+        run: |
+          echo "📦 Pre-downloading dataset to verify access..."
+          python -c "
+          from clearml import Dataset
+          import os
+          
+          try:
+              print('🔍 Attempting to get Guardian_Dataset...')
+              dataset = Dataset.get(
+                  dataset_name='Guardian_Dataset',
+                  dataset_project='Guardian_Training',
+                  only_completed=False
+              )
+              
+              if dataset:
+                  print(f'✅ Found dataset: {dataset.id}')
+                  print('📥 Getting local copy...')
+                  local_path = dataset.get_local_copy()
+                  print(f'✅ Dataset downloaded to: {local_path}')
+                  
+                  # Verify structure
+                  import pathlib
+                  dataset_path = pathlib.Path(local_path)
+                  for action in ['Falling', 'No Action', 'Waving']:
+                      action_dir = dataset_path / action
+                      if action_dir.exists():
+                          json_files = list(action_dir.glob('*_keypoints.json'))
+                          print(f'  {action}: {len(json_files)} files')
+                      else:
+                          print(f'  ❌ Missing: {action}')
+              else:
+                  print('❌ Dataset not found')
+                  exit(1)
+                  
+          except Exception as e:
+              print(f'❌ Error accessing dataset: {e}')
+              import traceback
+              traceback.print_exc()
+              exit(1)
+          "
+
       - name: Run Guardian Pipeline
         run: |
           echo "🚀 Starting Guardian AI Training Pipeline..."
+          # Let the pipeline handle ClearML dataset download internally
           python Guardian_pipeline.py
 
       - name: Upload Training Artifacts
         if: always()  # Upload even if pipeline fails
         uses: actions/upload-artifact@v4
         with:
-          name: training-artifacts
+          name: training-artifacts-${{ github.run_number }}
           path: |
             training_metrics.png
             *.pth
@@ -91,16 +134,18 @@ jobs:
         run: |
           echo "## 🎯 Guardian AI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Data Source**: ClearML Dataset" >> $GITHUB_STEP_SUMMARY
           echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch**: ${{ github.head_ref || github.ref_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📊 Training Results" >> $GITHUB_STEP_SUMMARY
+          
           if [ -f "training_metrics.png" ]; then
-            echo "✅ Training metrics generated" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Training completed successfully" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ Training metrics not found" >> $GITHUB_STEP_SUMMARY
+            echo "❌ Training failed or incomplete" >> $GITHUB_STEP_SUMMARY
           fi
+          
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔗 Links" >> $GITHUB_STEP_SUMMARY
           echo "- [ClearML Dashboard](https://app.clear.ml/)" >> $GITHUB_STEP_SUMMARY

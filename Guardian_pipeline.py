@@ -229,7 +229,35 @@ def download_and_verify_clearml_dataset(
                         if len(all_files) > 20:
                             comp_logger.info(f"  ... and {len(all_files) - 20} more items")
                 
-                # Copy the dataset structure
+                if dataset_root is None:
+                    comp_logger.error("Could not find valid dataset structure in downloaded files")
+                    comp_logger.info(f"Contents of download path: {list(temp_download_path.iterdir())}")
+                    
+                    # More detailed debugging - show full directory tree
+                    comp_logger.info("Detailed directory structure:")
+                    for root, dirs, files in os.walk(temp_download_path):
+                        level = root.replace(str(temp_download_path), '').count(os.sep)
+                        indent = ' ' * 2 * level
+                        comp_logger.info(f"{indent}{os.path.basename(root)}/")
+                        subindent = ' ' * 2 * (level + 1)
+                        for file in files[:5]:  # Show first 5 files per directory
+                            comp_logger.info(f"{subindent}{file}")
+                        if len(files) > 5:
+                            comp_logger.info(f"{subindent}... and {len(files) - 5} more files")
+                    
+                    # Try to find any JSON files to understand the structure
+                    json_files = list(temp_download_path.rglob("*.json"))
+                    comp_logger.info(f"Found {len(json_files)} JSON files in download:")
+                    for i, json_file in enumerate(json_files[:10]):  # Show first 10
+                        rel_path = json_file.relative_to(temp_download_path)
+                        comp_logger.info(f"  {i+1}. {rel_path}")
+                    
+                    # Cleanup temporary directory before returning
+                    import shutil
+                    shutil.rmtree(temp_download_path, ignore_errors=True)
+                    return None
+                
+                # Copy the dataset structure (only if dataset_root is not None)
                 for action in expected_actions:
                     source_action_dir = dataset_root / action
                     target_action_dir = local_path_obj / action
@@ -1636,7 +1664,7 @@ def guardian_training_pipeline():
     script_dir = pathlib.Path(__file__).resolve().parent if '__file__' in globals() else pathlib.Path(".").resolve()
     dataset_path = script_dir / "data" / dataset_name
 
-    # Step 1: Download and verify dataset
+    # Step 1: Download and verify dataset from ClearML
     logging.info("Starting dataset download and verification...")
     logging.info(f"Target dataset path: {dataset_path}")
     logging.info(f"Dataset name: {dataset_name}")
@@ -1693,7 +1721,7 @@ def guardian_training_pipeline():
         raise ValueError(error_msg)
     
     logging.info(f"Dataset step completed. Using path: {dataset_path_output}")
-    
+
     # Verify dataset structure after download
     expected_actions = ["Falling", "No Action", "Waving"]
     dataset_stats = {}
