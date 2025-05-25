@@ -121,51 +121,40 @@ jobs:
           import sys
           
           try:
-              # Get the latest deployment task
-              tasks = Task.get_tasks(
+              # Check for deployed models directly
+              models = Model.query_models(
                   project_name='Guardian_Training',
-                  task_name='Deploy_Best_Model_GitHub',
-                  task_status=['completed'],
+                  tags=['deployed', 'production', 'github-actions'],
+                  only_published=True,
+                  max_results=1,
                   order_by=['-created']
               )
               
-              if not tasks:
-                  print('❌ No deployment tasks found')
+              if not models:
+                  print('❌ No deployed models found')
+                  # Try to find any recent models
+                  recent_models = Model.query_models(
+                      project_name='Guardian_Training',
+                      model_name='BiLSTM_ActionRecognition',
+                      max_results=1,
+                      order_by=['-created']
+                  )
+                  if recent_models:
+                      print(f'⚠️  Found recent model but not deployed: {recent_models[0].id}')
                   sys.exit(1)
               
-              latest_task = tasks[0]
-              metrics = latest_task.get_last_scalar_metrics()
+              model = models[0]
+              print(f'✅ Found deployed model!')
+              print(f'🏷️  Model ID: {model.id}')
+              print(f'📅 Created: {model.created}')
               
-              if 'Deployment' in metrics and 'Status' in metrics['Deployment']:
-                  status = metrics['Deployment']['Status']['last']
-                  accuracy = metrics['Deployment']['Test_Accuracy']['last']
-                  
-                  if status == 1:  # deployed
-                      print(f'✅ Model deployed successfully!')
-                      print(f'📊 Test Accuracy: {accuracy:.2f}%')
-                      
-                      # Get deployed models
-                      models = Model.query_models(
-                          project_name='Guardian_Training',
-                          tags=['deployed', 'production'],
-                          only_published=True,
-                          max_results=1,
-                          order_by=['-created']
-                      )
-                      
-                      if models:
-                          model = models[0]
-                          print(f'🏷️  Model ID: {model.id}')
-                          print(f'📅 Deployed: {model.created}')
-                          print(f'🔗 Model URL: {model.url}')
-                      
-                  else:  # not deployed
-                      print(f'⚠️  Model not deployed')
-                      print(f'📊 Test Accuracy: {accuracy:.2f}% (below threshold)')
-                      
-              else:
-                  print('❌ Could not retrieve deployment status')
-                  sys.exit(1)
+              # Get model metadata for accuracy
+              design = model.get_model_design()
+              if design and 'test_accuracy' in design:
+                  accuracy = design['test_accuracy']
+                  print(f'📊 Test Accuracy: {accuracy:.2f}%')
+                             else:
+                   print('📊 Test Accuracy: Not available in model metadata')
                   
           except Exception as e:
               print(f'❌ Error checking deployment: {e}')

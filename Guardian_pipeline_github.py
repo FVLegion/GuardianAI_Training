@@ -763,7 +763,7 @@ def train_bilstm_github(
     optimizer = optim.Adam(model.parameters(), lr=base_lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=scheduler_factor, 
-        patience=scheduler_patience, verbose=True
+        patience=scheduler_patience
     )
     criterion = nn.CrossEntropyLoss()
 
@@ -1236,12 +1236,22 @@ def evaluate_model_github(
     # Get hyperparameters from best task
     best_params = best_task.get_parameters()
     
-    hidden_size = int(best_params.get('General/hidden_size', 256))
-    num_layers = int(best_params.get('General/num_layers', 4))
-    dropout_rate = float(best_params.get('General/dropout_rate', 0.1))
-    use_layer_norm = best_params.get('General/use_layer_norm', False)
-    attention_dropout = float(best_params.get('General/attention_dropout', 0.1))
-    batch_size = int(best_params.get('General/batch_size', 32))
+    # Handle different parameter formats
+    def safe_get_param(params, key, default, param_type):
+        try:
+            value = params.get(key, default)
+            if isinstance(value, dict) and 'value' in value:
+                value = value['value']
+            return param_type(value)
+        except (ValueError, TypeError):
+            return param_type(default)
+    
+    hidden_size = safe_get_param(best_params, 'General/hidden_size', 256, int)
+    num_layers = safe_get_param(best_params, 'General/num_layers', 4, int)
+    dropout_rate = safe_get_param(best_params, 'General/dropout_rate', 0.1, float)
+    use_layer_norm = safe_get_param(best_params, 'General/use_layer_norm', False, bool)
+    attention_dropout = safe_get_param(best_params, 'General/attention_dropout', 0.1, float)
+    batch_size = safe_get_param(best_params, 'General/batch_size', 32, int)
     
     print(f"Evaluating model with: hidden_size={hidden_size}, num_layers={num_layers}")
     
@@ -1371,7 +1381,7 @@ def deploy_model_github(
         model.update_design(config_dict={
             "deployment_status": "deployed",
             "test_accuracy": test_accuracy,
-            "deployment_date": task.get_task_date(),
+            "deployment_date": str(task.created),
             "deployment_threshold": min_accuracy_threshold,
             "deployed_by": "GitHub Actions"
         })
