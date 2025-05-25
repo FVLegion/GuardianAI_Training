@@ -1,37 +1,33 @@
-name: Run Guardian AI Pipeline on Self-Hosted Runner
+name: Run Guardian AI Pipeline
 
 on:
-  pull_request:
-    types: [closed]
-    branches:
-      - main
   push:
-    branches:
-      - main
-  workflow_dispatch:          # enables the "Run workflow" button in Actions
+    branches: [main]
+  workflow_dispatch:    # Manual trigger option
 
 jobs:
-  run-guardian-pipeline:
-    runs-on: [self-hosted, guardian, gpu]   # matches your KONG-LEGION runner labels
-    timeout-minutes: 360   # 6 hours timeout for training
-    
+  run_guardian_pipeline:
+    runs-on: [self-hosted, guardian, gpu]
+
+    env:  # Global environment variables for all steps
+      CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
+      CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
+      CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
+
     steps:
-      - name: Check out code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Verify Python installation
+      - name: Debug Environment
         shell: cmd
         run: |
-          echo "Checking Python installation..."
+          echo "Runner: %RUNNER_NAME%"
+          echo "OS: Windows"
+          echo "Python version:"
           python --version
-          python -c "import sys; print('Python executable:', sys.executable)"
-          python -c "import torch; print('PyTorch version:', torch.__version__)"
-
-      - name: Verify GPU availability
-        shell: cmd
-        run: |
-          echo "Checking GPU availability..."
-          python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('GPU count:', torch.cuda.device_count()); print('GPU name:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No GPU')"
+          echo "Working directory:"
+          cd
+          echo "CLEARML_API_HOST=%CLEARML_API_HOST%"
 
       - name: Install dependencies
         shell: cmd
@@ -39,39 +35,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Verify ClearML connection
-        shell: cmd
-        env:
-          CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
-          CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
-          CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
-        run: |
-          echo "Testing ClearML connection..."
-          python -c "from clearml import Task; print('ClearML connection successful')"
-
       - name: Run Guardian AI Pipeline
         shell: cmd
-        env:
-          CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
-          CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
-          CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
-        run: |
-          echo "Starting Guardian AI Training Pipeline on KONG-LEGION runner..."
-          echo "Runner: ${{ runner.name }}"
-          echo "OS: ${{ runner.os }}"
-          python Guardian_pipeline.py
+        run: python Guardian_pipeline.py
 
-      - name: Upload Training Artifacts
-        if: always()  # Upload even if pipeline fails
+      - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: guardian-training-artifacts-${{ github.run_number }}
+          name: training-results-${{ github.run_number }}
           path: |
-            training_metrics.png
-            *.pth
             *.png
+            *.pth
             evaluation_outputs/
-          retention-days: 30
+          retention-days: 5
 
       - name: Pipeline Summary
         if: always()
@@ -79,14 +56,6 @@ jobs:
         run: |
           echo ## Guardian AI Pipeline Summary >> %GITHUB_STEP_SUMMARY%
           echo - **Status**: ${{ job.status }} >> %GITHUB_STEP_SUMMARY%
-          echo - **Runner**: KONG-LEGION (Self-hosted GPU) >> %GITHUB_STEP_SUMMARY%
-          echo - **OS**: Windows >> %GITHUB_STEP_SUMMARY%
+          echo - **Runner**: %COMPUTERNAME% >> %GITHUB_STEP_SUMMARY%
           echo - **Trigger**: ${{ github.event_name }} >> %GITHUB_STEP_SUMMARY%
-          echo - **Branch**: ${{ github.head_ref || github.ref_name }} >> %GITHUB_STEP_SUMMARY%
-          echo - **Commit**: ${{ github.sha }} >> %GITHUB_STEP_SUMMARY%
-          echo. >> %GITHUB_STEP_SUMMARY%
-          if exist "training_metrics.png" (
-            echo ✅ Training completed successfully >> %GITHUB_STEP_SUMMARY%
-          ) else (
-            echo ❌ Training failed or incomplete >> %GITHUB_STEP_SUMMARY%
-          ) 
+          echo - **Run #**: ${{ github.run_number }} >> %GITHUB_STEP_SUMMARY% 
