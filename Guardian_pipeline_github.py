@@ -1233,27 +1233,116 @@ def evaluate_model_github(
     best_task = Task.get_task(task_id=best_task_id)
     best_model = Model(model_id=best_model_id)
     
-    # Get hyperparameters from best task
-    best_params = best_task.get_parameters()
+    print(f"🔍 Analyzing best model architecture...")
     
-    # Handle different parameter formats
-    def safe_get_param(params, key, default, param_type):
+    # Get model weights first to dynamically detect architecture
+    model_path = best_model.get_local_copy()
+    checkpoint = torch.load(model_path, map_location='cpu')
+    
+    # Dynamically infer all architecture parameters from checkpoint
+    def infer_architecture_from_checkpoint(checkpoint):
+        """Dynamically infer model architecture from saved weights."""
+        config = {}
+        
         try:
-            value = params.get(key, default)
-            if isinstance(value, dict) and 'value' in value:
-                value = value['value']
-            return param_type(value)
-        except (ValueError, TypeError):
-            return param_type(default)
+            # Infer hidden_size from LSTM weights
+            lstm_weight_shape = checkpoint['lstm.weight_ih_l0'].shape
+            config['hidden_size'] = lstm_weight_shape[0] // 4  # LSTM has 4 gates
+            
+            # Infer num_layers by counting LSTM layer weights
+            config['num_layers'] = 0
+            layer_idx = 0
+            while f'lstm.weight_ih_l{layer_idx}' in checkpoint:
+                config['num_layers'] += 1
+                layer_idx += 1
+            
+            # Check if layer normalization is used
+            config['use_layer_norm'] = 'layer_norm.weight' in checkpoint
+            
+            # Infer input_size from first LSTM layer
+            config['input_size'] = checkpoint['lstm.weight_ih_l0'].shape[1]
+            
+            # Infer num_classes from final layer
+            config['num_classes'] = checkpoint['fc.weight'].shape[0]
+            
+            # Check if attention dropout layer exists (harder to detect, use default)
+            config['attention_dropout'] = 0.1  # Default, hard to infer from weights
+            
+            # Dropout rate is hard to infer from weights, use default
+            config['dropout_rate'] = 0.1  # Default, hard to infer from weights
+            
+            print(f"✅ Inferred architecture:")
+            print(f"   - hidden_size: {config['hidden_size']}")
+            print(f"   - num_layers: {config['num_layers']}")
+            print(f"   - input_size: {config['input_size']}")
+            print(f"   - num_classes: {config['num_classes']}")
+            print(f"   - use_layer_norm: {config['use_layer_norm']}")
+            print(f"   - dropout_rate: {config['dropout_rate']} (default)")
+            print(f"   - attention_dropout: {config['attention_dropout']} (default)")
+            
+            return config
+            
+        except Exception as e:
+            print(f"❌ Error inferring architecture: {e}")
+            return None
     
-    hidden_size = safe_get_param(best_params, 'General/hidden_size', 256, int)
-    num_layers = safe_get_param(best_params, 'General/num_layers', 4, int)
-    dropout_rate = safe_get_param(best_params, 'General/dropout_rate', 0.1, float)
-    use_layer_norm = safe_get_param(best_params, 'General/use_layer_norm', False, bool)
-    attention_dropout = safe_get_param(best_params, 'General/attention_dropout', 0.1, float)
-    batch_size = safe_get_param(best_params, 'General/batch_size', 32, int)
+    # Try to infer architecture from checkpoint
+    inferred_config = infer_architecture_from_checkpoint(checkpoint)
     
-    print(f"Evaluating model with: hidden_size={hidden_size}, num_layers={num_layers}")
+    if inferred_config:
+        # Use inferred configuration
+        hidden_size = inferred_config['hidden_size']
+        num_layers = inferred_config['num_layers']
+        dropout_rate = inferred_config['dropout_rate']
+        use_layer_norm = inferred_config['use_layer_norm']
+        attention_dropout = inferred_config['attention_dropout']
+        input_size = inferred_config['input_size']  # Override with actual
+        num_classes = inferred_config['num_classes']  # Override with actual
+        batch_size = 32  # Default for evaluation
+        
+    else:
+        print("⚠️  Could not infer architecture, using fallback methods...")
+        
+        # Fallback 1: Try model design
+        model_design = best_model.get_model_design()
+        if model_design:
+            print(f"📋 Using model design: {model_design}")
+            hidden_size = int(model_design.get('hidden_size', 256))
+            num_layers = int(model_design.get('num_layers', 4))
+            dropout_rate = float(model_design.get('dropout_rate', 0.1))
+            use_layer_norm = bool(model_design.get('use_layer_norm', False))
+            attention_dropout = float(model_design.get('attention_dropout', 0.1))
+            batch_size = int(model_design.get('batch_size', 32))
+        else:
+            print("📋 Using task parameters...")
+            # Fallback 2: Task parameters
+            best_params = best_task.get_parameters()
+            
+            def safe_get_param(params, key, default, param_type):
+                try:
+                    value = params.get(key, default)
+                    if isinstance(value, dict) and 'value' in value:
+                        value = value['value']
+                    return param_type(value)
+                except (ValueError, TypeError):
+                    return param_type(default)
+            
+            hidden_size = safe_get_param(best_params, 'General/hidden_size', 256, int)
+            num_layers = safe_get_param(best_params, 'General/num_layers', 4, int)
+            dropout_rate = safe_get_param(best_params, 'General/dropout_rate', 0.1, float)
+            use_layer_norm = safe_get_param(best_params, 'General/use_layer_norm', False, bool)
+            attention_dropout = safe_get_param(best_params, 'General/attention_dropout', 0.1, float)
+            batch_size = safe_get_param(best_params, 'General/batch_size', 32, int)
+    
+    print(f"🏗️  Final model configuration:")
+    print(f"   - input_size: {input_size}")
+    print(f"   - hidden_size: {hidden_size}")
+    print(f"   - num_layers: {num_layers}")
+    print(f"   - num_classes: {num_classes}")
+    print(f"   - dropout_rate: {dropout_rate}")
+    print(f"   - use_layer_norm: {use_layer_norm}")
+    print(f"   - attention_dropout: {attention_dropout}")
+    print(f"   - batch_size: {batch_size}")
     
     # Load dataset
     action_classes = ["Falling", "No Action", "Waving"]
@@ -1274,8 +1363,11 @@ def evaluate_model_github(
     test_loader = DataLoader(make_torch_dataset_for_loader(test_data, test_labels), 
                             batch_size=batch_size, shuffle=False)
     
-    # Initialize model
+    # Initialize model with dynamically detected architecture
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    print(f"🚀 Creating model with detected architecture...")
+    
     model = ActionRecognitionBiLSTMWithAttention(
         input_size=input_size,
         hidden_size=hidden_size,
@@ -1286,9 +1378,16 @@ def evaluate_model_github(
         attention_dropout=attention_dropout
     ).to(device)
     
-    # Load model weights
-    model_path = best_model.get_local_copy()
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    # Load model weights (checkpoint already loaded above)
+    try:
+        model.load_state_dict(checkpoint)
+        print("✅ Model weights loaded successfully!")
+    except RuntimeError as e:
+        print(f"❌ Error loading model weights: {e}")
+        print(f"Model architecture: {model}")
+        print(f"Checkpoint keys: {list(checkpoint.keys())}")
+        raise
+    
     model.eval()
     
     # Evaluate
@@ -1368,33 +1467,44 @@ def deploy_model_github(
     print(f"Deploying model {best_model_id} with test accuracy: {test_accuracy:.2f}%")
     
     if test_accuracy >= min_accuracy_threshold:
-        # Get the model
-        model = Model(model_id=best_model_id)
-        
-        # Publish the model for deployment
-        model.publish()
-        
-        # Add deployment tags
-        model.add_tags(["deployed", "production", "github-actions"])
-        
-        # Update model metadata
-        model.update_design(config_dict={
-            "deployment_status": "deployed",
-            "test_accuracy": test_accuracy,
-            "deployment_date": str(task.created),
-            "deployment_threshold": min_accuracy_threshold,
-            "deployed_by": "GitHub Actions"
-        })
-        
-        logger.report_scalar("Deployment", "Status", 1, 0)  # 1 = deployed
-        logger.report_scalar("Deployment", "Test_Accuracy", test_accuracy, 0)
-        
-        print(f"✅ Model deployed successfully!")
-        print(f"📊 Test Accuracy: {test_accuracy:.2f}%")
-        print(f"🎯 Threshold: {min_accuracy_threshold}%")
-        print(f"🏷️  Model ID: {best_model_id}")
-        
-        return "deployed"
+        try:
+            # Get the model
+            model = Model(model_id=best_model_id)
+            
+            # Publish the model for deployment
+            model.publish()
+            print(f"📤 Model published successfully")
+            
+            # Add deployment tags
+            model.add_tags(["deployed", "production", "github-actions"])
+            print(f"🏷️  Added deployment tags")
+            
+            # Update model metadata
+            model.update_design(config_dict={
+                "deployment_status": "deployed",
+                "test_accuracy": test_accuracy,
+                "deployment_date": str(task.created),
+                "deployment_threshold": min_accuracy_threshold,
+                "deployed_by": "GitHub Actions"
+            })
+            print(f"📋 Updated model metadata")
+            
+            logger.report_scalar("Deployment", "Status", 1, 0)  # 1 = deployed
+            logger.report_scalar("Deployment", "Test_Accuracy", test_accuracy, 0)
+            
+            print(f"✅ Model deployed successfully!")
+            print(f"📊 Test Accuracy: {test_accuracy:.2f}%")
+            print(f"🎯 Threshold: {min_accuracy_threshold}%")
+            print(f"🏷️  Model ID: {best_model_id}")
+            
+            return "deployed"
+            
+        except Exception as e:
+            print(f"❌ Error during deployment: {e}")
+            logger.report_scalar("Deployment", "Status", 0, 0)  # 0 = failed
+            logger.report_scalar("Deployment", "Test_Accuracy", test_accuracy, 0)
+            print(f"⚠️  Model met accuracy threshold but deployment failed")
+            return "deployment_failed"
     else:
         logger.report_scalar("Deployment", "Status", 0, 0)  # 0 = not deployed
         logger.report_scalar("Deployment", "Test_Accuracy", test_accuracy, 0)
@@ -1504,12 +1614,16 @@ def guardian_github_pipeline():
 
     # Step 6: Deploy model if it meets threshold
     logging.info("Starting model deployment...")
-    deployment_status = deploy_model_github(
-        best_model_id=best_model_id,
-        test_accuracy=accuracy_value,
-        min_accuracy_threshold=85.0  # Deploy if accuracy >= 85%
-    )
-    logging.info(f"Deployment completed. Status: {deployment_status}")
+    try:
+        deployment_status = deploy_model_github(
+            best_model_id=best_model_id,
+            test_accuracy=accuracy_value,
+            min_accuracy_threshold=85.0  # Deploy if accuracy >= 85%
+        )
+        logging.info(f"Deployment completed. Status: {deployment_status}")
+    except Exception as e:
+        logging.error(f"Deployment failed with error: {e}")
+        deployment_status = "deployment_error"
 
     logging.info("Guardian GitHub Pipeline finished successfully.")
     return accuracy_value, deployment_status
