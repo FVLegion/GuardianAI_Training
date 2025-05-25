@@ -87,5 +87,95 @@ jobs:
           CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
           CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
         run: |
-          python Guardian_pipeline_github.py 
+          python Guardian_pipeline_github.py
+
+  deploy-model:
+    runs-on: [self-hosted, Linux, X64, guardian, gpu]
+    needs: run-pipeline
+    if: success()
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install clearml
+
+      - name: Check deployment status
+        env:
+          CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
+          CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
+          CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
+        run: |
+          echo "🚀 Checking model deployment status..."
+          
+          python -c "
+          from clearml import Model, Task
+          import sys
+          
+          try:
+              # Get the latest deployment task
+              tasks = Task.get_tasks(
+                  project_name='Guardian_Training',
+                  task_name='Deploy_Best_Model_GitHub',
+                  task_status=['completed'],
+                  order_by=['-created']
+              )
+              
+              if not tasks:
+                  print('❌ No deployment tasks found')
+                  sys.exit(1)
+              
+              latest_task = tasks[0]
+              metrics = latest_task.get_last_scalar_metrics()
+              
+              if 'Deployment' in metrics and 'Status' in metrics['Deployment']:
+                  status = metrics['Deployment']['Status']['last']
+                  accuracy = metrics['Deployment']['Test_Accuracy']['last']
+                  
+                  if status == 1:  # deployed
+                      print(f'✅ Model deployed successfully!')
+                      print(f'📊 Test Accuracy: {accuracy:.2f}%')
+                      
+                      # Get deployed models
+                      models = Model.query_models(
+                          project_name='Guardian_Training',
+                          tags=['deployed', 'production'],
+                          only_published=True,
+                          max_results=1,
+                          order_by=['-created']
+                      )
+                      
+                      if models:
+                          model = models[0]
+                          print(f'🏷️  Model ID: {model.id}')
+                          print(f'📅 Deployed: {model.created}')
+                          print(f'🔗 Model URL: {model.url}')
+                      
+                  else:  # not deployed
+                      print(f'⚠️  Model not deployed')
+                      print(f'📊 Test Accuracy: {accuracy:.2f}% (below threshold)')
+                      
+              else:
+                  print('❌ Could not retrieve deployment status')
+                  sys.exit(1)
+                  
+          except Exception as e:
+              print(f'❌ Error checking deployment: {e}')
+              sys.exit(1)
+          "
+
+      - name: Notify deployment success
+        if: success()
+        run: |
+          echo "🎉 Guardian AI Pipeline completed successfully!"
+          echo "✅ Model training, optimization, evaluation, and deployment finished"
+          echo "📈 Check ClearML dashboard for detailed results and metrics" 
           

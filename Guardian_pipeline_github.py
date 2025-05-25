@@ -508,7 +508,7 @@ def prepare_data(dataset_path: str):
         return None, 0, 0
 
 # ============================================================================
-# COMPONENT 3: LIGHTWEIGHT TRAINING FOR GITHUB ACTIONS
+# COMPONENT 3: ENHANCED TRAINING FOR GITHUB ACTIONS
 # ============================================================================
 
 @PipelineDecorator.component(
@@ -523,13 +523,20 @@ def train_bilstm_github(
     input_size: int = 34,
     num_classes: int = 3,
     base_lr: float = 0.001,
-    epochs: int = 10,  # Reduced for GitHub Actions
-    hidden_size: int = 128,  # Reduced for faster training
-    num_layers: int = 2,  # Reduced for faster training
+    epochs: int = 50,  # Full training epochs
+    hidden_size: int = 256,  # Full model size
+    num_layers: int = 4,  # Full model depth
     dropout_rate: float = 0.1,
-    batch_size: int = 16  # Reduced for memory efficiency
+    batch_size: int = 32,  # Standard batch size
+    weight_decay: float = 1e-5,
+    scheduler_patience: int = 5,
+    scheduler_factor: float = 0.5,
+    grad_clip_norm: float = 1.0,
+    noise_factor: float = 0.0,
+    use_layer_norm: bool = False,
+    attention_dropout: float = 0.1
 ):
-    """Lightweight BiLSTM training optimized for GitHub Actions."""
+    """Enhanced BiLSTM training with full feature set for GitHub Actions."""
     import torch
     import torch.nn as nn
     import torch.optim as optim
@@ -542,28 +549,35 @@ def train_bilstm_github(
     import os
     import matplotlib.pyplot as plt
 
-    # Simplified model classes
+    # Enhanced model classes with full features
     class AttentionLayer(nn.Module):
-        def __init__(self, hidden_size):
+        def __init__(self, hidden_size, dropout_rate=0.1):
             super(AttentionLayer, self).__init__()
             self.attention_weights = nn.Linear(hidden_size * 2, 1)
+            self.dropout = nn.Dropout(dropout_rate)
 
         def forward(self, lstm_output):
-            scores = self.attention_weights(lstm_output)
+            scores = self.attention_weights(self.dropout(lstm_output))
             attention_weights = torch.softmax(scores, dim=1)
             context_vector = torch.sum(attention_weights * lstm_output, dim=1)
             return context_vector, attention_weights.squeeze(-1)
 
-    class ActionRecognitionBiLSTM(nn.Module):
-        def __init__(self, input_size, hidden_size, num_layers, num_classes, dropout_rate=0.5):
-            super(ActionRecognitionBiLSTM, self).__init__()
+    class ActionRecognitionBiLSTMWithAttention(nn.Module):
+        def __init__(self, input_size, hidden_size, num_layers, num_classes, 
+                     dropout_rate=0.5, use_layer_norm=False, attention_dropout=0.1):
+            super(ActionRecognitionBiLSTMWithAttention, self).__init__()
             self.hidden_size = hidden_size
             self.num_layers = num_layers
+            self.use_layer_norm = use_layer_norm
             
             self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
-                                batch_first=True, dropout=dropout_rate, bidirectional=True)
+                                batch_first=True, dropout=dropout_rate if num_layers > 1 else 0, 
+                                bidirectional=True)
             
-            self.attention = AttentionLayer(hidden_size)
+            if use_layer_norm:
+                self.layer_norm = nn.LayerNorm(hidden_size * 2)
+            
+            self.attention = AttentionLayer(hidden_size, attention_dropout)
             self.fc = nn.Linear(hidden_size * 2, num_classes)
             self.dropout = nn.Dropout(dropout_rate)
 
@@ -572,6 +586,552 @@ def train_bilstm_github(
             c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
 
             out, _ = self.lstm(x, (h0, c0))
+            
+            if self.use_layer_norm:
+                out = self.layer_norm(out)
+                
+            out = self.dropout(out)
+            context_vector, attention_weights = self.attention(out)
+            out = self.fc(context_vector)
+            return out, attention_weights
+
+    class PoseDataset(Dataset):
+        def __init__(self, data_dir, action_classes, max_frames=40, noise_factor=0.0):
+            self.data_dir = data_dir
+            self.action_classes = action_classes
+            self.max_frames = max_frames
+            self.noise_factor = noise_factor
+            self.data, self.labels = self.load_data()
+
+        def load_data(self):
+            data = []
+            labels = []
+            for i, action in enumerate(self.action_classes):
+                action_dir = os.path.join(self.data_dir, action)
+                if not os.path.exists(action_dir):
+                    continue
+
+                for filename in os.listdir(action_dir):
+                    if filename.endswith("_keypoints.json"):
+                        filepath = os.path.join(action_dir, filename)
+                        try:
+                            with open(filepath, 'r') as f:
+                                keypoints_data = json.load(f)
+                                normalized_keypoints = self.process_keypoints(keypoints_data)
+                                if normalized_keypoints is not None:
+                                    data.append(normalized_keypoints)
+                                    labels.append(i)
+                        except Exception as e:
+                            continue
+                
+            return data, labels
+
+        def process_keypoints(self, keypoints_data):
+            all_frames_keypoints = []
+            previous_frame = None
+            alpha = 0.8
+
+            for frame_data in keypoints_data:
+                if not isinstance(frame_data, dict) or 'keypoints' not in frame_data:
+                    continue
+
+                frame_keypoints = frame_data['keypoints']
+                if not isinstance(frame_keypoints, list) or len(frame_keypoints) == 0:
+                    continue
+
+                frame_keypoints_np = np.array(frame_keypoints[0]).reshape(-1, 3)
+                if frame_keypoints_np.shape != (17, 3):
+                    continue
+
+                valid_keypoints = frame_keypoints_np[frame_keypoints_np[:, 2] > 0.2]
+                if valid_keypoints.size == 0:
+                    continue
+
+                mean_x = np.mean(valid_keypoints[:, 0])
+                std_x = np.std(valid_keypoints[:, 0]) + 1e-8
+                mean_y = np.mean(valid_keypoints[:, 1])
+                std_y = np.std(valid_keypoints[:, 1]) + 1e-8
+
+                normalized_frame_keypoints = frame_keypoints_np.copy()
+                normalized_frame_keypoints[:, 0] = (normalized_frame_keypoints[:, 0] - mean_x) / std_x
+                normalized_frame_keypoints[:, 1] = (normalized_frame_keypoints[:, 1] - mean_y) / std_y
+
+                if previous_frame is not None:
+                    normalized_frame_keypoints[:, 0] = alpha * normalized_frame_keypoints[:, 0] + (1 - alpha) * previous_frame[:, 0]
+                    normalized_frame_keypoints[:, 1] = alpha * normalized_frame_keypoints[:, 1] + (1 - alpha) * previous_frame[:, 1]
+
+                previous_frame = normalized_frame_keypoints
+                normalized_frame_keypoints = normalized_frame_keypoints[:, :2].flatten()
+                all_frames_keypoints.append(normalized_frame_keypoints)
+
+            if not all_frames_keypoints:
+                return None
+            padded_keypoints = np.zeros((self.max_frames, all_frames_keypoints[0].shape[0]))
+            for i, frame_kps in enumerate(all_frames_keypoints):
+                if i < self.max_frames:
+                    padded_keypoints[i, :] = frame_kps
+
+            return padded_keypoints
+
+        def __len__(self):
+            return len(self.data)
+
+        def __getitem__(self, idx):
+            data = self.data[idx].copy()
+            
+            # Add noise augmentation if specified
+            if self.noise_factor > 0:
+                noise = np.random.normal(0, self.noise_factor, data.shape)
+                data = data + noise
+            
+            return torch.tensor(data, dtype=torch.float32), torch.tensor(self.labels[idx], dtype=torch.long)
+    
+    # Initialize task
+    task = Task.current_task()
+    if task is None:
+        task = Task.init(
+            project_name="Guardian_Training",
+            task_name="Train_BiLSTM_GitHub"
+        )
+    
+    logger = task.get_logger()
+    
+    # Connect hyperparameters
+    hyperparams = {
+        'General/base_lr': base_lr,
+        'General/epochs': epochs,
+        'General/hidden_size': hidden_size,
+        'General/num_layers': num_layers,
+        'General/dropout_rate': dropout_rate,
+        'General/input_size': input_size,
+        'General/num_classes': num_classes,
+        'General/batch_size': batch_size,
+        'General/weight_decay': weight_decay,
+        'General/scheduler_patience': scheduler_patience,
+        'General/scheduler_factor': scheduler_factor,
+        'General/grad_clip_norm': grad_clip_norm,
+        'General/noise_factor': noise_factor,
+        'General/use_layer_norm': use_layer_norm,
+        'General/attention_dropout': attention_dropout
+    }
+    task.connect(hyperparams)
+
+    # Recreate DataLoaders from dataset path
+    action_classes = ["Falling", "No Action", "Waving"]
+    dataset = PoseDataset(data_dir=dataset_path, action_classes=action_classes, noise_factor=noise_factor)
+    
+    if not dataset.data or not dataset.labels: 
+        raise RuntimeError("No data or labels loaded by PoseDataset")
+
+    # Split data into train, validation, and test sets
+    train_val_data, test_data, train_val_labels, test_labels = train_test_split(
+        dataset.data, dataset.labels, test_size=0.2, random_state=42,
+        stratify=dataset.labels if len(set(dataset.labels)) > 1 else None
+    )
+    train_data, val_data, train_labels, val_labels = train_test_split(
+        train_val_data, train_val_labels, test_size=0.25, random_state=42,
+        stratify=train_val_labels if len(set(train_val_labels)) > 1 else None
+    )
+
+    def make_torch_dataset_for_loader(split_data, split_labels, use_noise=False):
+        temp_ds = PoseDataset(data_dir=dataset_path, action_classes=action_classes, 
+                             noise_factor=noise_factor if use_noise else 0.0)
+        temp_ds.data = split_data
+        temp_ds.labels = split_labels
+        return temp_ds
+
+    # Create data loaders (only apply noise to training data)
+    train_loader = DataLoader(make_torch_dataset_for_loader(train_data, train_labels, use_noise=True), 
+                             batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(make_torch_dataset_for_loader(val_data, val_labels, use_noise=False), 
+                           batch_size=batch_size, shuffle=False)
+
+    # Initialize model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    model = ActionRecognitionBiLSTMWithAttention(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        num_classes=num_classes,
+        dropout_rate=dropout_rate,
+        use_layer_norm=use_layer_norm,
+        attention_dropout=attention_dropout
+    ).to(device)
+
+    optimizer = optim.Adam(model.parameters(), lr=base_lr, weight_decay=weight_decay)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=scheduler_factor, 
+        patience=scheduler_patience, verbose=True
+    )
+    criterion = nn.CrossEntropyLoss()
+
+    # Training loop
+    best_acc = 0.0
+    best_model_path = "best_bilstm_github.pth"
+    train_losses, val_losses, val_accuracies = [], [], []
+
+    for epoch in range(epochs):
+        # Training phase
+        model.train()
+        total_train_loss = 0.0
+        correct_train = 0
+        total_train = 0
+
+        for batch_idx, (x, y) in enumerate(train_loader):
+            x, y = x.to(device), y.to(device)
+            
+            optimizer.zero_grad()
+            outputs, _ = model(x)
+            loss = criterion(outputs, y)
+            loss.backward()
+            
+            # Gradient clipping
+            if grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
+            
+            optimizer.step()
+
+            total_train_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total_train += y.size(0)
+            correct_train += predicted.eq(y).sum().item()
+
+        avg_train_loss = total_train_loss / len(train_loader)
+        train_acc = 100.0 * correct_train / total_train
+
+        # Validation phase
+        model.eval()
+        total_val_loss = 0.0
+        all_val_preds, all_val_labels = [], []
+
+        with torch.no_grad():
+            for x, y in val_loader:
+                x, y = x.to(device), y.to(device)
+                outputs, _ = model(x)
+                loss = criterion(outputs, y)
+
+                total_val_loss += loss.item()
+                _, predicted = outputs.max(1)
+                all_val_preds.extend(predicted.cpu().tolist())
+                all_val_labels.extend(y.cpu().tolist())
+
+        avg_val_loss = total_val_loss / len(val_loader)
+        val_acc = accuracy_score(all_val_labels, all_val_preds) * 100
+        
+        # Store metrics
+        train_losses.append(avg_train_loss)
+        val_losses.append(avg_val_loss)
+        val_accuracies.append(val_acc)
+        
+        # Log metrics
+        logger.report_scalar("Loss", "Train", avg_train_loss, epoch)
+        logger.report_scalar("Loss", "Validation", avg_val_loss, epoch)
+        logger.report_scalar("Accuracy", "Train", train_acc, epoch)
+        logger.report_scalar("Accuracy", "Validation", val_acc, epoch)
+        
+        print(f"Epoch {epoch+1}/{epochs}: "
+              f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.2f}%, "
+              f"Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+        
+        # Step scheduler
+        scheduler.step(avg_val_loss)
+        
+        # Save best model
+        if val_acc > best_acc:
+            best_acc = val_acc
+            torch.save(model.state_dict(), best_model_path)
+            print(f"New best model saved with validation accuracy: {val_acc:.2f}%")
+    
+    # Generate training plot
+    plt.figure(figsize=(12, 4))
+    
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label='Training Loss', color='blue')
+    plt.plot(val_losses, label='Validation Loss', color='red')
+    plt.title('Training and Validation Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    plt.subplot(1, 2, 2)
+    plt.plot(val_accuracies, label='Validation Accuracy', color='green')
+    plt.title('Validation Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy (%)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig('training_metrics_github.png', dpi=150, bbox_inches='tight')
+    logger.report_matplotlib_figure("Training Metrics", "GitHub", plt.gcf(), 0)
+    plt.close()
+    
+    # Publish model
+    output_model = OutputModel(task=task, name="BiLSTM_ActionRecognition", framework="PyTorch")
+    output_model.update_weights(weights_filename=best_model_path)
+    
+    output_model.update_design(config_dict={
+        "architecture": "BiLSTM with Enhanced Attention",
+        "input_size": input_size,
+        "hidden_size": hidden_size,
+        "num_layers": num_layers,
+        "num_classes": num_classes,
+        "dropout_rate": dropout_rate,
+        "batch_size": batch_size,
+        "weight_decay": weight_decay,
+        "scheduler_patience": scheduler_patience,
+        "scheduler_factor": scheduler_factor,
+        "grad_clip_norm": grad_clip_norm,
+        "noise_factor": noise_factor,
+        "use_layer_norm": use_layer_norm,
+        "attention_dropout": attention_dropout,
+        "best_validation_accuracy": best_acc,
+        "framework": "PyTorch",
+        "training_epochs": epochs
+    })
+    
+    print(f"Model published with ID: {output_model.id}")
+    print(f"Best validation accuracy: {best_acc:.2f}%")
+    
+    return task.id, output_model.id
+
+# ============================================================================
+# COMPONENT 4: HYPERPARAMETER OPTIMIZATION
+# ============================================================================
+
+@PipelineDecorator.component(
+    name="BiLSTM_HPO_GitHub",
+    return_values=["best_task_id", "best_model_id"],
+    cache=False,
+    packages=["clearml"]
+)
+def bilstm_hyperparam_optimizer_github(
+    base_task_id: str,
+    dataset_path: str,
+    input_size: int,
+    num_classes: int,
+    total_max_trials: int = 30
+):
+    """
+    Hyperparameter optimization for GitHub Actions with 30 trials.
+    """
+    from clearml.automation import HyperParameterOptimizer, RandomSearch
+    from clearml.automation import DiscreteParameterRange, UniformParameterRange
+    from clearml import Task, Model
+    
+    print(f"Starting hyperparameter optimization with {total_max_trials} trials...")
+    
+    # Initialize HPO task
+    hpo_task = Task.init(
+        project_name="Guardian_Training",
+        task_name="BiLSTM_HPO_GitHub_Controller",
+        task_type=Task.TaskTypes.optimizer,
+        reuse_last_task_id=False
+    )
+
+    # Define search space
+    optimizer = HyperParameterOptimizer(
+        base_task_id=base_task_id,
+        hyper_parameters=[
+            # Learning rate
+            UniformParameterRange('General/base_lr', min_value=0.0001, max_value=0.01),
+            
+            # Hidden size
+            DiscreteParameterRange('General/hidden_size', values=[128, 192, 256, 320, 384, 512]),
+            
+            # Number of layers
+            DiscreteParameterRange('General/num_layers', values=[2, 3, 4, 5]),
+            
+            # Dropout rate
+            UniformParameterRange('General/dropout_rate', min_value=0.05, max_value=0.5),
+            
+            # Epochs
+            DiscreteParameterRange('General/epochs', values=[30, 40, 50, 60]),
+            
+            # Batch size
+            DiscreteParameterRange('General/batch_size', values=[16, 24, 32, 48, 64]),
+            
+            # Weight decay
+            UniformParameterRange('General/weight_decay', min_value=1e-6, max_value=1e-3),
+            
+            # Scheduler patience
+            DiscreteParameterRange('General/scheduler_patience', values=[3, 5, 7, 10]),
+            
+            # Scheduler factor
+            UniformParameterRange('General/scheduler_factor', min_value=0.2, max_value=0.8),
+            
+            # Gradient clipping
+            UniformParameterRange('General/grad_clip_norm', min_value=0.5, max_value=3.0),
+            
+            # Noise factor
+            UniformParameterRange('General/noise_factor', min_value=0.0, max_value=0.05),
+            
+            # Layer normalization
+            DiscreteParameterRange('General/use_layer_norm', values=[True, False]),
+            
+            # Attention dropout
+            UniformParameterRange('General/attention_dropout', min_value=0.0, max_value=0.2),
+        ],
+        
+        # Objective metric
+        objective_metric_title="Accuracy",
+        objective_metric_series="Validation",
+        objective_metric_sign="max",
+        
+        # Execution settings
+        max_number_of_concurrent_tasks=2,  # Reduced for GitHub Actions
+        optimizer_class=RandomSearch,
+        save_top_k_tasks_only=5,
+        
+        # Fixed arguments
+        base_task_kwargs={
+            'dataset_path': dataset_path,
+            'input_size': input_size,
+            'num_classes': num_classes
+        },
+        
+        total_max_jobs=total_max_trials,
+    )
+    
+    print(f"Search space configured for {total_max_trials} trials")
+    print("Starting optimization...")
+    
+    # Start optimization
+    optimizer.start_locally()
+    optimizer.wait()
+    optimizer.stop()
+    
+    print("Hyperparameter optimization completed!")
+    
+    # Get best experiment
+    top_exps = optimizer.get_top_experiments(top_k=1)
+    if not top_exps:
+        raise RuntimeError("No HPO experiments returned by optimizer.")
+    
+    best_exp = top_exps[0]
+    best_exp_id = best_exp.id
+    
+    # Get validation accuracy
+    metrics = best_exp.get_last_scalar_metrics()
+    best_acc = None
+    
+    metric_paths = [
+        ("Accuracy", "Validation"),
+        ("metrics", "Validation_Accuracy"),
+    ]
+    
+    for title, series in metric_paths:
+        try:
+            if title in metrics and series in metrics[title]:
+                best_acc = metrics[title][series].get("last")
+                if best_acc is not None:
+                    break
+        except (KeyError, AttributeError, TypeError):
+            continue
+    
+    print(f"Best experiment ID: {best_exp_id}, Validation Accuracy: {best_acc}")
+    
+    # Get the best model
+    best_exp_task = Task.get_task(task_id=best_exp_id)
+    
+    if (best_exp_task.models and 
+        'output' in best_exp_task.models and 
+        len(best_exp_task.models['output']) > 0):
+        model = best_exp_task.models['output'][0]
+        model_id = model.id
+        print(f"Best model ID: {model_id}")
+        return best_exp_id, model_id
+    else:
+        # Fallback: search for published models
+        models = Model.query_models(
+            project_name="Guardian_Training",
+            model_name="BiLSTM_ActionRecognition",
+            only_published=True,
+            max_results=5,
+            order_by=['-created']
+        )
+        
+        if models and len(models) > 0:
+            best_model = models[0]
+            print(f"Using fallback model ID: {best_model.id}")
+            return best_exp_id, best_model.id
+        else:
+            raise RuntimeError("No models found for the best experiment.")
+
+# ============================================================================
+# COMPONENT 5: MODEL EVALUATION
+# ============================================================================
+
+@PipelineDecorator.component(
+    name="Evaluate_Model_GitHub",
+    return_values=["test_accuracy"],
+    cache=False,
+    packages=["torch", "scikit-learn", "numpy", "clearml", "matplotlib", "seaborn"]
+)
+def evaluate_model_github(
+    best_task_id: str,
+    best_model_id: str,
+    dataset_path: str,
+    input_size: int = 34,
+    num_classes: int = 3
+):
+    """Evaluate the best model from HPO."""
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, Dataset
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+    from clearml import Task, Model
+    import numpy as np
+    import json
+    import os
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    # Model classes (same as training)
+    class AttentionLayer(nn.Module):
+        def __init__(self, hidden_size, dropout_rate=0.1):
+            super(AttentionLayer, self).__init__()
+            self.attention_weights = nn.Linear(hidden_size * 2, 1)
+            self.dropout = nn.Dropout(dropout_rate)
+
+        def forward(self, lstm_output):
+            scores = self.attention_weights(self.dropout(lstm_output))
+            attention_weights = torch.softmax(scores, dim=1)
+            context_vector = torch.sum(attention_weights * lstm_output, dim=1)
+            return context_vector, attention_weights.squeeze(-1)
+
+    class ActionRecognitionBiLSTMWithAttention(nn.Module):
+        def __init__(self, input_size, hidden_size, num_layers, num_classes, 
+                     dropout_rate=0.5, use_layer_norm=False, attention_dropout=0.1):
+            super(ActionRecognitionBiLSTMWithAttention, self).__init__()
+            self.hidden_size = hidden_size
+            self.num_layers = num_layers
+            self.use_layer_norm = use_layer_norm
+            
+            self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
+                                batch_first=True, dropout=dropout_rate if num_layers > 1 else 0, 
+                                bidirectional=True)
+            
+            if use_layer_norm:
+                self.layer_norm = nn.LayerNorm(hidden_size * 2)
+            
+            self.attention = AttentionLayer(hidden_size, attention_dropout)
+            self.fc = nn.Linear(hidden_size * 2, num_classes)
+            self.dropout = nn.Dropout(dropout_rate)
+
+        def forward(self, x):
+            h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
+            c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_size).to(x.device)
+
+            out, _ = self.lstm(x, (h0, c0))
+            
+            if self.use_layer_norm:
+                out = self.layer_norm(out)
+                
             out = self.dropout(out)
             context_vector, attention_weights = self.attention(out)
             out = self.fc(context_vector)
@@ -659,189 +1219,179 @@ def train_bilstm_github(
 
         def __getitem__(self, idx):
             return torch.tensor(self.data[idx], dtype=torch.float32), torch.tensor(self.labels[idx], dtype=torch.long)
-    
-    # Initialize task
-    task = Task.current_task()
-    if task is None:
-        task = Task.init(
-            project_name="Guardian_Training",
-            task_name="Train_BiLSTM_GitHub"
-        )
+
+    # Initialize evaluation task
+    task = Task.init(
+        project_name="Guardian_Training",
+        task_name="Evaluate_Best_Model_GitHub",
+        task_type=Task.TaskTypes.testing
+    )
     
     logger = task.get_logger()
     
-    # Connect hyperparameters
-    hyperparams = {
-        'General/base_lr': base_lr,
-        'General/epochs': epochs,
-        'General/hidden_size': hidden_size,
-        'General/num_layers': num_layers,
-        'General/dropout_rate': dropout_rate,
-        'General/input_size': input_size,
-        'General/num_classes': num_classes,
-        'General/batch_size': batch_size
-    }
-    task.connect(hyperparams)
-
-    # Recreate DataLoaders from dataset path
+    # Get best task and model details
+    best_task = Task.get_task(task_id=best_task_id)
+    best_model = Model(model_id=best_model_id)
+    
+    # Get hyperparameters from best task
+    best_params = best_task.get_parameters()
+    
+    hidden_size = int(best_params.get('General/hidden_size', 256))
+    num_layers = int(best_params.get('General/num_layers', 4))
+    dropout_rate = float(best_params.get('General/dropout_rate', 0.1))
+    use_layer_norm = best_params.get('General/use_layer_norm', False)
+    attention_dropout = float(best_params.get('General/attention_dropout', 0.1))
+    batch_size = int(best_params.get('General/batch_size', 32))
+    
+    print(f"Evaluating model with: hidden_size={hidden_size}, num_layers={num_layers}")
+    
+    # Load dataset
     action_classes = ["Falling", "No Action", "Waving"]
     dataset = PoseDataset(data_dir=dataset_path, action_classes=action_classes)
     
-    if not dataset.data or not dataset.labels: 
-        raise RuntimeError("No data or labels loaded by PoseDataset")
-
-    # Split data into train, validation, and test sets
+    # Split data (same as training)
     train_val_data, test_data, train_val_labels, test_labels = train_test_split(
         dataset.data, dataset.labels, test_size=0.2, random_state=42,
         stratify=dataset.labels if len(set(dataset.labels)) > 1 else None
     )
-    train_data, val_data, train_labels, val_labels = train_test_split(
-        train_val_data, train_val_labels, test_size=0.25, random_state=42,
-        stratify=train_val_labels if len(set(train_val_labels)) > 1 else None
-    )
-
+    
     def make_torch_dataset_for_loader(split_data, split_labels):
         temp_ds = PoseDataset(data_dir=dataset_path, action_classes=action_classes)
         temp_ds.data = split_data
         temp_ds.labels = split_labels
         return temp_ds
-
-    # Create data loaders
-    train_loader = DataLoader(make_torch_dataset_for_loader(train_data, train_labels), 
-                             batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(make_torch_dataset_for_loader(val_data, val_labels), 
-                           batch_size=batch_size, shuffle=False)
-
+    
+    test_loader = DataLoader(make_torch_dataset_for_loader(test_data, test_labels), 
+                            batch_size=batch_size, shuffle=False)
+    
     # Initialize model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    
-    model = ActionRecognitionBiLSTM(
+    model = ActionRecognitionBiLSTMWithAttention(
         input_size=input_size,
         hidden_size=hidden_size,
         num_layers=num_layers,
         num_classes=num_classes,
-        dropout_rate=dropout_rate
+        dropout_rate=dropout_rate,
+        use_layer_norm=use_layer_norm,
+        attention_dropout=attention_dropout
     ).to(device)
-
-    optimizer = optim.Adam(model.parameters(), lr=base_lr)
-    criterion = nn.CrossEntropyLoss()
-
-    # Training loop
-    best_acc = 0.0
-    best_model_path = "best_bilstm_github.pth"
-    train_losses, val_losses, val_accuracies = [], [], []
-
-    for epoch in range(epochs):
-        # Training phase
-        model.train()
-        total_train_loss = 0.0
-        correct_train = 0
-        total_train = 0
-
-        for batch_idx, (x, y) in enumerate(train_loader):
+    
+    # Load model weights
+    model_path = best_model.get_local_copy()
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
+    
+    # Evaluate
+    all_preds, all_labels = [], []
+    
+    with torch.no_grad():
+        for x, y in test_loader:
             x, y = x.to(device), y.to(device)
-            
-            optimizer.zero_grad()
             outputs, _ = model(x)
-            loss = criterion(outputs, y)
-            loss.backward()
-            optimizer.step()
-
-            total_train_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total_train += y.size(0)
-            correct_train += predicted.eq(y).sum().item()
-
-        avg_train_loss = total_train_loss / len(train_loader)
-        train_acc = 100.0 * correct_train / total_train
-
-        # Validation phase
-        model.eval()
-        total_val_loss = 0.0
-        all_val_preds, all_val_labels = [], []
-
-        with torch.no_grad():
-            for x, y in val_loader:
-                x, y = x.to(device), y.to(device)
-                outputs, _ = model(x)
-                loss = criterion(outputs, y)
-
-                total_val_loss += loss.item()
-                _, predicted = outputs.max(1)
-                all_val_preds.extend(predicted.cpu().tolist())
-                all_val_labels.extend(y.cpu().tolist())
-
-        avg_val_loss = total_val_loss / len(val_loader)
-        val_acc = accuracy_score(all_val_labels, all_val_preds) * 100
-        
-        # Store metrics
-        train_losses.append(avg_train_loss)
-        val_losses.append(avg_val_loss)
-        val_accuracies.append(val_acc)
-        
-        # Log metrics
-        logger.report_scalar("Loss", "Train", avg_train_loss, epoch)
-        logger.report_scalar("Loss", "Validation", avg_val_loss, epoch)
-        logger.report_scalar("Accuracy", "Train", train_acc, epoch)
-        logger.report_scalar("Accuracy", "Validation", val_acc, epoch)
-        
-        print(f"Epoch {epoch+1}/{epochs}: "
-              f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.2f}%, "
-              f"Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc:.2f}%")
-        
-        # Save best model
-        if val_acc > best_acc:
-            best_acc = val_acc
-            torch.save(model.state_dict(), best_model_path)
-            print(f"New best model saved with validation accuracy: {val_acc:.2f}%")
+            preds = outputs.argmax(dim=1)
+            
+            all_preds.extend(preds.cpu().tolist())
+            all_labels.extend(y.cpu().tolist())
     
-    # Generate training plot
-    plt.figure(figsize=(12, 4))
+    test_accuracy = accuracy_score(all_labels, all_preds) * 100
     
-    plt.subplot(1, 2, 1)
-    plt.plot(train_losses, label='Training Loss', color='blue')
-    plt.plot(val_losses, label='Validation Loss', color='red')
-    plt.title('Training and Validation Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+    # Log metrics
+    logger.report_scalar("Accuracy", "Test", test_accuracy, 0)
     
-    plt.subplot(1, 2, 2)
-    plt.plot(val_accuracies, label='Validation Accuracy', color='green')
-    plt.title('Validation Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy (%)')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
+    # Generate confusion matrix
+    cm = confusion_matrix(all_labels, all_preds)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=action_classes, yticklabels=action_classes)
+    plt.title('Confusion Matrix - Test Set', fontsize=16)
+    plt.xlabel('Predicted Label', fontsize=12)
+    plt.ylabel('True Label', fontsize=12)
     plt.tight_layout()
-    plt.savefig('training_metrics_github.png', dpi=150, bbox_inches='tight')
-    logger.report_matplotlib_figure("Training Metrics", "GitHub", plt.gcf(), 0)
+    plt.savefig('confusion_matrix_github.png', dpi=150, bbox_inches='tight')
+    logger.report_matplotlib_figure("Confusion Matrix", "Test Set", plt.gcf(), 0)
     plt.close()
     
-    # Publish model
-    output_model = OutputModel(task=task, name="BiLSTM_ActionRecognition_GitHub", framework="PyTorch")
-    output_model.update_weights(weights_filename=best_model_path)
+    # Classification report
+    report = classification_report(all_labels, all_preds, target_names=action_classes, output_dict=True)
+    report_str = classification_report(all_labels, all_preds, target_names=action_classes)
     
-    output_model.update_design(config_dict={
-        "architecture": "BiLSTM with Attention",
-        "input_size": input_size,
-        "hidden_size": hidden_size,
-        "num_layers": num_layers,
-        "num_classes": num_classes,
-        "dropout_rate": dropout_rate,
-        "batch_size": batch_size,
-        "best_validation_accuracy": best_acc,
-        "framework": "PyTorch",
-        "optimized_for": "GitHub Actions"
-    })
+    # Log per-class metrics
+    for class_name in action_classes:
+        if class_name in report:
+            logger.report_scalar("Precision", class_name, report[class_name]['precision'], 0)
+            logger.report_scalar("Recall", class_name, report[class_name]['recall'], 0)
+            logger.report_scalar("F1-Score", class_name, report[class_name]['f1-score'], 0)
     
-    print(f"Model published with ID: {output_model.id}")
-    print(f"Best validation accuracy: {best_acc:.2f}%")
+    logger.report_text(f"Classification Report:\n{report_str}", print_console=True)
     
-    return task.id, output_model.id
+    print(f"Test Accuracy: {test_accuracy:.2f}%")
+    print(f"Macro F1-Score: {report['macro avg']['f1-score']:.4f}")
+    
+    return float(test_accuracy)
+
+# ============================================================================
+# COMPONENT 6: MODEL DEPLOYMENT
+# ============================================================================
+
+@PipelineDecorator.component(
+    name="Deploy_Model_GitHub",
+    return_values=["deployment_status"],
+    cache=False,
+    packages=["clearml"]
+)
+def deploy_model_github(
+    best_model_id: str,
+    test_accuracy: float,
+    min_accuracy_threshold: float = 85.0
+):
+    """Deploy the best model if it meets accuracy threshold."""
+    from clearml import Model, Task
+    
+    task = Task.init(
+        project_name="Guardian_Training",
+        task_name="Deploy_Best_Model_GitHub",
+        task_type=Task.TaskTypes.service
+    )
+    
+    logger = task.get_logger()
+    
+    print(f"Deploying model {best_model_id} with test accuracy: {test_accuracy:.2f}%")
+    
+    if test_accuracy >= min_accuracy_threshold:
+        # Get the model
+        model = Model(model_id=best_model_id)
+        
+        # Publish the model for deployment
+        model.publish()
+        
+        # Add deployment tags
+        model.add_tags(["deployed", "production", "github-actions"])
+        
+        # Update model metadata
+        model.update_design(config_dict={
+            "deployment_status": "deployed",
+            "test_accuracy": test_accuracy,
+            "deployment_date": task.get_task_date(),
+            "deployment_threshold": min_accuracy_threshold,
+            "deployed_by": "GitHub Actions"
+        })
+        
+        logger.report_scalar("Deployment", "Status", 1, 0)  # 1 = deployed
+        logger.report_scalar("Deployment", "Test_Accuracy", test_accuracy, 0)
+        
+        print(f"✅ Model deployed successfully!")
+        print(f"📊 Test Accuracy: {test_accuracy:.2f}%")
+        print(f"🎯 Threshold: {min_accuracy_threshold}%")
+        print(f"🏷️  Model ID: {best_model_id}")
+        
+        return "deployed"
+    else:
+        logger.report_scalar("Deployment", "Status", 0, 0)  # 0 = not deployed
+        logger.report_scalar("Deployment", "Test_Accuracy", test_accuracy, 0)
+        
+        print(f"❌ Model not deployed - accuracy {test_accuracy:.2f}% below threshold {min_accuracy_threshold}%")
+        
+        return "not_deployed"
 
 # ============================================================================
 # MAIN PIPELINE FOR GITHUB ACTIONS
@@ -852,7 +1402,7 @@ def train_bilstm_github(
     project="Guardian_Training"
 )
 def guardian_github_pipeline():
-    """Lightweight Guardian AI pipeline optimized for GitHub Actions."""
+    """Complete Guardian AI pipeline with HPO and deployment for GitHub Actions."""
     logging.basicConfig(level=logging.INFO)
     logging.info("Guardian GitHub Pipeline started...")
     
@@ -908,23 +1458,51 @@ def guardian_github_pipeline():
         raise RuntimeError("Data preparation failed.")
     logging.info("Data preparation completed.")
 
-    # Step 3: Train lightweight model
-    logging.info("Starting lightweight model training...")
-    task_id, model_id = train_bilstm_github(
+    # Step 3: Train baseline model
+    logging.info("Starting baseline model training...")
+    base_task_id, base_model_id = train_bilstm_github(
+        dataset_path=dataset_path,
+        input_size=input_size,
+        num_classes=num_classes
+    )
+    if not base_task_id:
+        raise RuntimeError("Baseline training failed.")
+    logging.info(f"Baseline training completed. Task ID: {base_task_id}, Model ID: {base_model_id}")
+
+    # Step 4: Hyperparameter optimization (30 trials)
+    logging.info("Starting hyperparameter optimization...")
+    best_task_id, best_model_id = bilstm_hyperparam_optimizer_github(
+        base_task_id=base_task_id,
         dataset_path=dataset_path,
         input_size=input_size,
         num_classes=num_classes,
-        epochs=10,  # Quick training for GitHub Actions
-        hidden_size=128,
-        num_layers=2,
-        batch_size=16
+        total_max_trials=30
     )
-    if not task_id:
-        raise RuntimeError("Training failed.")
-    logging.info(f"Training completed. Task ID: {task_id}, Model ID: {model_id}")
+    logging.info(f"HPO completed. Best task ID: {best_task_id}, Best model ID: {best_model_id}")
+
+    # Step 5: Evaluate best model
+    logging.info("Starting model evaluation...")
+    test_accuracy = evaluate_model_github(
+        best_task_id=best_task_id,
+        best_model_id=best_model_id,
+        dataset_path=dataset_path,
+        input_size=input_size,
+        num_classes=num_classes
+    )
+    accuracy_value = float(test_accuracy) if hasattr(test_accuracy, '__float__') else test_accuracy
+    logging.info(f"Evaluation completed. Test accuracy: {accuracy_value:.2f}%")
+
+    # Step 6: Deploy model if it meets threshold
+    logging.info("Starting model deployment...")
+    deployment_status = deploy_model_github(
+        best_model_id=best_model_id,
+        test_accuracy=accuracy_value,
+        min_accuracy_threshold=85.0  # Deploy if accuracy >= 85%
+    )
+    logging.info(f"Deployment completed. Status: {deployment_status}")
 
     logging.info("Guardian GitHub Pipeline finished successfully.")
-    return task_id, model_id
+    return accuracy_value, deployment_status
 
 # ============================================================================
 # MAIN EXECUTION
@@ -945,5 +1523,10 @@ if __name__ == '__main__':
 
     print(f"\n🎉 Guardian AI GitHub Pipeline Completed! 🎉")
     print(f"⏱️  Total Execution Time: {elapsed_time:.2f} minutes")
-    print(f"🎯 Task ID: {result[0]}")
-    print(f"🤖 Model ID: {result[1]}") 
+    print(f"🎯 Final Test Accuracy: {result[0]:.2f}%")
+    print(f"🚀 Deployment Status: {result[1]}")
+    
+    if result[1] == "deployed":
+        print(f"✅ Model successfully deployed to production!")
+    else:
+        print(f"⚠️  Model not deployed (accuracy below threshold)") 
