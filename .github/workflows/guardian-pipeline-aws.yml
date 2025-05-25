@@ -29,13 +29,63 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Setup dataset symlink
+        run: |
+          echo "🔗 Setting up dataset symlink for self-hosted runner..."
+          
+          # Check if absolute dataset path exists
+          if [ -d "/home/sagemaker-user/data/Guardian_Dataset" ]; then
+            echo "✅ Found dataset at absolute path: /home/sagemaker-user/data/Guardian_Dataset"
+            
+            # Create data directory in workspace
+            mkdir -p data
+            
+            # Create symlink if it doesn't exist
+            if [ ! -L "data/Guardian_Dataset" ]; then
+              ln -s /home/sagemaker-user/data/Guardian_Dataset data/Guardian_Dataset
+              echo "✅ Created symlink: data/Guardian_Dataset -> /home/sagemaker-user/data/Guardian_Dataset"
+            else
+              echo "✅ Symlink already exists"
+            fi
+            
+            # Verify symlink
+            ls -la data/
+            echo "📊 Dataset structure:"
+            ls -la data/Guardian_Dataset/ | head -10
+            
+          else
+            echo "⚠️  Absolute dataset path not found. Pipeline will create mock data."
+          fi
+
+      - name: Verify ClearML Configuration
+        env:
+          CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
+          CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
+          CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
+        run: |
+          echo "🔍 Checking ClearML configuration..."
+          echo "CLEARML_API_HOST: ${CLEARML_API_HOST:-'Not Set'}"
+          echo "CLEARML_API_ACCESS_KEY: ${CLEARML_API_ACCESS_KEY:+Set}"
+          echo "CLEARML_API_SECRET_KEY: ${CLEARML_API_SECRET_KEY:+Set}"
+          
+          echo "🧪 Testing ClearML connection..."
+          python -c "
+          try:
+              from clearml import Task
+              print('✅ ClearML import successful')
+              task = Task.init(project_name='test', task_name='connection_test', auto_connect_frameworks=False)
+              print('✅ ClearML connection successful')
+              task.close()
+          except Exception as e:
+              print(f'❌ ClearML connection failed: {e}')
+              print('This may be expected if credentials are not configured')
+          "
+
       - name: Run ClearML pipeline
         env:
           CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
           CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
-          CLEARML_API_HOST:     ${{ secrets.CLEARML_API_HOST }}
-       
-
+          CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
         run: |
           python Guardian_pipeline_github.py 
           
