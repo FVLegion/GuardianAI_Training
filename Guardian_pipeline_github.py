@@ -26,7 +26,7 @@ def download_and_setup_dataset(
     local_target_path: str,
     fallback_url: str = None
 ) -> str | None:
-    """Download dataset from ClearML or fallback URL and ensure proper structure."""
+    """Download actual dataset from ClearML with proper error handling."""
     import pathlib
     import os
     import shutil
@@ -36,33 +36,71 @@ def download_and_setup_dataset(
     import logging
     from clearml import Dataset
     
-    def create_sample_dataset(dataset_path: pathlib.Path, logger):
-        """Create a minimal sample dataset for testing purposes."""
-        logger.info("Creating sample dataset structure...")
+    def download_real_dataset_from_clearml(dataset_name: str, project_name: str, local_path: str) -> bool:
+        """
+        Check if dataset exists locally and download it if not.
         
-        action_classes = ["Falling", "No Action", "Waving"]
+        Args:
+            dataset_name: Name of the dataset in ClearML
+            project_name: Name of the project in ClearML
+            local_path: Local path where the dataset should be stored
         
-        for action in action_classes:
-            action_dir = dataset_path / action
-            action_dir.mkdir(parents=True, exist_ok=True)
+        Returns:
+            bool: True if dataset exists or was downloaded successfully, False otherwise
+        """
+        print(f"\nChecking for dataset: {dataset_name}")
+        
+        # Check if dataset exists locally with expected structure
+        if os.path.exists(local_path):
+            # Check for action class directories
+            expected_classes = ["Falling", "No Action", "Waving"]
+            has_action_structure = any(os.path.exists(os.path.join(local_path, folder)) for folder in expected_classes)
             
-            # Create a sample keypoints file
-            sample_keypoints = []
-            for frame_idx in range(30):  # 30 frames
-                frame_data = {
-                    "keypoints": [[
-                        [100 + frame_idx + i, 100 + frame_idx + i, 0.9] for i in range(17)  # 17 keypoints with x, y, confidence
-                    ]]
-                }
-                sample_keypoints.append(frame_data)
+            # Also check for train/valid/test structure
+            train_test_folders = ["train", "valid", "test"]
+            has_train_test_structure = all(os.path.exists(os.path.join(local_path, folder)) for folder in train_test_folders)
             
-            # Save sample file
-            sample_file = action_dir / f"sample_{action.lower().replace(' ', '_')}_keypoints.json"
-            with open(sample_file, 'w') as f:
-                json.dump(sample_keypoints, f)
+            if has_action_structure or has_train_test_structure:
+                print(f"Dataset {dataset_name} found locally at {local_path}")
+                return True
+            else:
+                print(f"Dataset {dataset_name} exists but missing required structure. Will download from ClearML.")
+        
+        # Try to get the latest version from ClearML
+        try:
+            dataset = Dataset.get(dataset_name=dataset_name, dataset_project=project_name, only_completed=True)
+            if dataset is None:
+                print(f"Dataset {dataset_name} not found in ClearML")
+                return False
             
-            logger.info(f"Created sample file: {sample_file}")
-
+            print(f"Downloading dataset {dataset_name} from ClearML...")
+            
+            # Create the directory if it doesn't exist
+            os.makedirs(local_path, exist_ok=True)
+            
+            # Download to a temporary location first
+            temp_path = dataset.get_local_copy()
+            
+            # Move contents from temp location to desired location
+            for item in os.listdir(temp_path):
+                s = os.path.join(temp_path, item)
+                d = os.path.join(local_path, item)
+                if os.path.isdir(s):
+                    if os.path.exists(d):
+                        shutil.rmtree(d)
+                    shutil.move(s, d)
+                else:
+                    shutil.copy2(s, d)
+            
+            # Clean up temporary directory
+            shutil.rmtree(temp_path)
+            
+            print(f"Dataset downloaded successfully to {local_path}")
+            return True
+        except Exception as e:
+            print(f"Error downloading dataset: {str(e)}")
+            return False
+    
     def validate_and_fix_dataset_structure(dataset_path: pathlib.Path, logger):
         """Validate and fix the dataset structure to match expected format."""
         logger.info("Validating dataset structure...")
@@ -105,108 +143,36 @@ def download_and_setup_dataset(
                     if not new_path.exists():
                         old_path.rename(new_path)
                         logger.info(f"Renamed '{existing_dir}' to '{class_mappings[normalized_name]}'")
-            
-            # Create any still missing directories with sample data
-            for class_name in expected_classes:
-                class_dir = dataset_path / class_name
-                if not class_dir.exists():
-                    logger.warning(f"Creating missing directory: {class_name}")
-                    class_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    # Create a minimal sample file
-                    sample_keypoints = []
-                    for frame_idx in range(20):
-                        frame_data = {
-                            "keypoints": [[
-                                [50 + frame_idx + i, 50 + frame_idx + i, 0.8] for i in range(17)
-                            ]]
-                        }
-                        sample_keypoints.append(frame_data)
-                    
-                    sample_file = class_dir / f"sample_{class_name.lower().replace(' ', '_')}_keypoints.json"
-                    with open(sample_file, 'w') as f:
-                        json.dump(sample_keypoints, f)
-                    logger.info(f"Created sample file for {class_name}")
         
-        # Validate that each directory has keypoints files
+        # Log what we found
         for class_name in expected_classes:
             class_dir = dataset_path / class_name
-            keypoint_files = list(class_dir.glob("*keypoints.json"))
-            if not keypoint_files:
-                logger.warning(f"No keypoints files found in {class_name}, creating sample...")
-                # Create sample as above
-                sample_keypoints = []
-                for frame_idx in range(25):
-                    frame_data = {
-                        "keypoints": [[
-                            [60 + frame_idx + i, 60 + frame_idx + i, 0.85] for i in range(17)
-                        ]]
-                    }
-                    sample_keypoints.append(frame_data)
-                
-                sample_file = class_dir / f"generated_{class_name.lower().replace(' ', '_')}_keypoints.json"
-                with open(sample_file, 'w') as f:
-                    json.dump(sample_keypoints, f)
-                logger.info(f"Generated keypoints file for {class_name}")
-            else:
+            if class_dir.exists():
+                keypoint_files = list(class_dir.glob("*keypoints.json"))
                 logger.info(f"Found {len(keypoint_files)} keypoints files in {class_name}")
+            else:
+                logger.warning(f"Directory {class_name} still missing after validation")
     
     local_path_obj = pathlib.Path(local_target_path).resolve()
     comp_logger = logging.getLogger(f"Component.{download_and_setup_dataset.__name__}")
     
     try:
-        # Create target directory if it doesn't exist
-        local_path_obj.mkdir(parents=True, exist_ok=True)
+        # Use the robust download function
+        success = download_real_dataset_from_clearml(
+            dataset_name=dataset_name,
+            project_name=dataset_project,
+            local_path=str(local_path_obj)
+        )
         
-        # Try to get dataset from ClearML first
-        try:
-            comp_logger.info(f"Attempting to download dataset '{dataset_name}' from ClearML...")
-            remote_dataset = Dataset.get(
-                dataset_name=dataset_name,
-                dataset_project=dataset_project,
-                only_completed=True
-            )
+        if not success:
+            comp_logger.error(f"Failed to download dataset '{dataset_name}' from ClearML")
             
-            if remote_dataset:
-                comp_logger.info("ClearML dataset found, downloading...")
-                temp_download_path_str = remote_dataset.get_local_copy()
-                if temp_download_path_str:
-                    temp_download_path = pathlib.Path(temp_download_path_str).resolve()
-                    
-                    # Move/copy files to target location
-                    moved_items_count = 0
-                    copied_items_count = 0
-                    for item_name in os.listdir(temp_download_path):
-                        source_item_path = temp_download_path / item_name
-                        destination_item_path = local_path_obj / item_name
-                
-                        if destination_item_path.exists():
-                            if destination_item_path.is_dir():
-                                shutil.rmtree(destination_item_path)
-                            else:
-                                destination_item_path.unlink(missing_ok=True) 
-                        
-                        if source_item_path.is_dir():
-                            shutil.move(str(source_item_path), str(destination_item_path))
-                            moved_items_count += 1
-                        else:
-                            shutil.copy2(str(source_item_path), str(destination_item_path))
-                            copied_items_count += 1
-                    
-                    # Cleanup temporary directory
-                    shutil.rmtree(temp_download_path)
-                    comp_logger.info(f"ClearML dataset downloaded: {moved_items_count} dirs, {copied_items_count} files")
-                else:
-                    raise Exception("Failed to get local copy from ClearML")
-            else:
-                raise Exception("Dataset not found in ClearML")
-                
-        except Exception as clearml_error:
-            comp_logger.warning(f"ClearML download failed: {clearml_error}")
-            
-            # Fallback to URL download if provided
+            # Try fallback URL if provided
             if fallback_url:
                 comp_logger.info(f"Attempting fallback download from URL: {fallback_url}")
+                
+                # Create target directory
+                local_path_obj.mkdir(parents=True, exist_ok=True)
                 
                 # Download from URL
                 zip_path = local_path_obj / "dataset.zip"
@@ -220,13 +186,25 @@ def download_and_setup_dataset(
                 zip_path.unlink()
                 comp_logger.info("Fallback dataset downloaded and extracted")
             else:
-                # Create sample dataset structure for testing
-                comp_logger.warning("No fallback URL provided, creating sample dataset structure...")
-                create_sample_dataset(local_path_obj, comp_logger)
+                comp_logger.error("No fallback URL provided and ClearML download failed")
+                return None
         
         # Validate and fix dataset structure
         validate_and_fix_dataset_structure(local_path_obj, comp_logger)
         
+        # Final check - ensure we have some data
+        total_files = 0
+        for class_name in ["Falling", "No Action", "Waving"]:
+            class_dir = local_path_obj / class_name
+            if class_dir.exists():
+                keypoint_files = list(class_dir.glob("*keypoints.json"))
+                total_files += len(keypoint_files)
+        
+        if total_files == 0:
+            comp_logger.error("No keypoints files found in any class directory")
+            return None
+        
+        comp_logger.info(f"Dataset validation complete. Found {total_files} total keypoints files")
         return str(local_path_obj) if local_path_obj.exists() and local_path_obj.is_dir() else None
 
     except Exception as e:
