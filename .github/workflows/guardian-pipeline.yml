@@ -1,146 +1,48 @@
-name: Run Guardian AI Pipeline (Cloud - Disabled)
+name: Run Guardian AI Pipeline on Self-Hosted Runner
 
-# Disabled due to ClearML dataset access issues in GitHub Actions
-# Use guardian-local-trigger.yml instead for local GPU execution
-# on:
-#   pull_request:
-#     branches: [main]
-#   workflow_dispatch:  # Allow manual triggering
-
-# Uncomment the 'on' section above to re-enable cloud execution
 on:
-  workflow_dispatch:  # Manual triggering only
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:          # enables the "Run workflow" button in Actions
 
 jobs:
-  run_guardian_pipeline:
-    runs-on: ubuntu-latest
-    timeout-minutes: 180  # 3 hours timeout for training
-
-    env:
-      CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
-      CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
-      CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
-
+  run-guardian-pipeline:
+    runs-on: [self-hosted, guardian, gpu]   # must match the labels you set on your runner
+    timeout-minutes: 360   # 6 hours timeout for training
+    
     steps:
-      - name: ⚠️ Cloud Execution Notice
-        run: |
-          echo "⚠️  WARNING: Cloud execution is disabled due to ClearML dataset access issues"
-          echo "🏠 Use local GPU execution instead:"
-          echo "   1. Run: start_local_listener.bat (Windows) or python local_pipeline_listener.py"
-          echo "   2. Trigger via: guardian-local-trigger.yml workflow"
-          echo "   3. See: LOCAL_EXECUTION_GUIDE.md for setup instructions"
-          echo ""
-          echo "🔧 To re-enable cloud execution:"
-          echo "   1. Fix ClearML dataset structure issues"
-          echo "   2. Uncomment the 'on' triggers in this workflow"
-          echo "   3. Test thoroughly before production use"
-
-      - name: Checkout code
+      - name: Check out code
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Debug ClearML Environment
+      - name: Run Guardian AI Pipeline
+        env:
+          CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
+          CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
+          CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
         run: |
-          echo "🔍 Checking ClearML configuration..."
-          echo "CLEARML_API_HOST=$CLEARML_API_HOST"
-          if [ -z "$CLEARML_API_HOST" ]; then 
-            echo "❌ CLEARML_API_HOST is empty!"
-            exit 1
-          fi
-          if [ -z "$CLEARML_API_ACCESS_KEY" ]; then 
-            echo "❌ CLEARML_API_ACCESS_KEY is empty!"
-            exit 1
-          fi
-          echo "✅ ClearML environment variables are set"
-          
-          # Test ClearML connection
-          python -c "
-          from clearml import Task
-          print('✅ ClearML import successful')
-          try:
-              from clearml.backend_api.session.client import APIClient
-              client = APIClient()
-              print('✅ ClearML API connection successful')
-          except Exception as e:
-              print(f'❌ ClearML connection failed: {e}')
-              exit(1)
-          "
-
-      - name: Test ClearML Dataset Access
-        run: |
-          echo "🧪 Testing ClearML dataset access..."
-          python test_clearml_dataset.py
-
-      - name: Pre-download Dataset (Optional Cache)
-        run: |
-          echo "📦 Pre-downloading dataset to verify access..."
-          python -c "
-          from clearml import Dataset
-          import os
-          
-          try:
-              print('🔍 Attempting to get Guardian_Dataset...')
-              dataset = Dataset.get(
-                  dataset_name='Guardian_Dataset',
-                  dataset_project='Guardian_Training',
-                  only_completed=False
-              )
-              
-              if dataset:
-                  print(f'✅ Found dataset: {dataset.id}')
-                  print('📥 Getting local copy...')
-                  local_path = dataset.get_local_copy()
-                  print(f'✅ Dataset downloaded to: {local_path}')
-                  
-                  # Verify structure
-                  import pathlib
-                  dataset_path = pathlib.Path(local_path)
-                  for action in ['Falling', 'No Action', 'Waving']:
-                      action_dir = dataset_path / action
-                      if action_dir.exists():
-                          json_files = list(action_dir.glob('*_keypoints.json'))
-                          print(f'  {action}: {len(json_files)} files')
-                      else:
-                          print(f'  ❌ Missing: {action}')
-              else:
-                  print('❌ Dataset not found')
-                  exit(1)
-                  
-          except Exception as e:
-              print(f'❌ Error accessing dataset: {e}')
-              import traceback
-              traceback.print_exc()
-              exit(1)
-          "
-
-      - name: Run Guardian Pipeline
-        run: |
-          echo "🚀 Starting Guardian AI Training Pipeline..."
-          # Let the pipeline handle ClearML dataset download internally
+          echo "Starting Guardian AI Training Pipeline..."
           python Guardian_pipeline.py
 
       - name: Upload Training Artifacts
         if: always()  # Upload even if pipeline fails
         uses: actions/upload-artifact@v4
         with:
-          name: training-artifacts-${{ github.run_number }}
+          name: guardian-training-artifacts-${{ github.run_number }}
           path: |
             training_metrics.png
             *.pth
@@ -151,21 +53,15 @@ jobs:
       - name: Pipeline Summary
         if: always()
         run: |
-          echo "## 🎯 Guardian AI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Guardian AI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Data Source**: ClearML Dataset" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner**: Self-hosted GPU" >> $GITHUB_STEP_SUMMARY
           echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch**: ${{ github.head_ref || github.ref_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
           if [ -f "training_metrics.png" ]; then
             echo "✅ Training completed successfully" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ Training failed or incomplete" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🔗 Links" >> $GITHUB_STEP_SUMMARY
-          echo "- [ClearML Dashboard](https://app.clear.ml/)" >> $GITHUB_STEP_SUMMARY
-          echo "- [Training Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY 
+          fi 
