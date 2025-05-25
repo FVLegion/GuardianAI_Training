@@ -913,7 +913,7 @@ def bilstm_hyperparam_optimizer_github(
     dataset_path: str,
     input_size: int,
     num_classes: int,
-    total_max_trials: int = 30
+    total_max_trials: int = 15
 ):
     """
     Hyperparameter optimization for GitHub Actions with 30 trials.
@@ -1475,19 +1475,30 @@ def deploy_model_github(
             model.publish()
             print(f"📤 Model published successfully")
             
-            # Add deployment tags
-            model.add_tags(["deployed", "production", "github-actions"])
-            print(f"🏷️  Added deployment tags")
+            # Add deployment tags using the correct API
+            try:
+                # Try the correct method for adding tags
+                current_tags = model.tags or []
+                new_tags = list(set(current_tags + ["deployed", "production", "github-actions"]))
+                model.edit(tags=new_tags)
+                print(f"🏷️  Added deployment tags: {new_tags}")
+            except Exception as tag_error:
+                print(f"⚠️  Could not add tags: {tag_error}")
+                # Continue anyway - tags are not critical
             
             # Update model metadata
-            model.update_design(config_dict={
-                "deployment_status": "deployed",
-                "test_accuracy": test_accuracy,
-                "deployment_date": str(task.created),
-                "deployment_threshold": min_accuracy_threshold,
-                "deployed_by": "GitHub Actions"
-            })
-            print(f"📋 Updated model metadata")
+            try:
+                model.update_design(config_dict={
+                    "deployment_status": "deployed",
+                    "test_accuracy": test_accuracy,
+                    "deployment_date": str(task.created),
+                    "deployment_threshold": min_accuracy_threshold,
+                    "deployed_by": "GitHub Actions"
+                })
+                print(f"📋 Updated model metadata")
+            except Exception as metadata_error:
+                print(f"⚠️  Could not update metadata: {metadata_error}")
+                # Continue anyway - metadata is not critical
             
             logger.report_scalar("Deployment", "Status", 1, 0)  # 1 = deployed
             logger.report_scalar("Deployment", "Test_Accuracy", test_accuracy, 0)
