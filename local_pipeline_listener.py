@@ -33,7 +33,7 @@ try:
     import git
     from clearml import Task
 except ImportError as e:
-    print(f"❌ Missing dependencies: {e}")
+    print(f"Missing dependencies: {e}")
     print("Install with: pip install requests flask gitpython clearml")
     sys.exit(1)
 
@@ -44,12 +44,12 @@ POLL_INTERVAL = 60  # seconds
 WEBHOOK_PORT = 8080
 LOG_FILE = "pipeline_listener.log"
 
-# Setup logging
+# Setup logging with UTF-8 encoding
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE),
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -97,10 +97,10 @@ class GitHubMonitor:
         try:
             logger.info("Pulling latest changes...")
             self.repo.remotes.origin.pull()
-            logger.info("✅ Successfully pulled latest changes")
+            logger.info("SUCCESS: Successfully pulled latest changes")
             return True
         except Exception as e:
-            logger.error(f"❌ Error pulling changes: {e}")
+            logger.error(f"ERROR: Error pulling changes: {e}")
             return False
 
 class PipelineRunner:
@@ -113,7 +113,7 @@ class PipelineRunner:
     def run_pipeline(self, trigger_info: Optional[Dict[str, Any]] = None) -> bool:
         """Run the Guardian AI pipeline"""
         try:
-            logger.info("🚀 Starting Guardian AI pipeline...")
+            logger.info("STARTING: Guardian AI pipeline...")
             
             # Change to repository directory
             os.chdir(self.repo_path)
@@ -140,21 +140,21 @@ class PipelineRunner:
             duration = end_time - start_time
             
             if result.returncode == 0:
-                logger.info(f"✅ Pipeline completed successfully in {duration}")
+                logger.info(f"SUCCESS: Pipeline completed successfully in {duration}")
                 logger.info("Pipeline output:")
                 logger.info(result.stdout)
                 return True
             else:
-                logger.error(f"❌ Pipeline failed with return code {result.returncode}")
+                logger.error(f"ERROR: Pipeline failed with return code {result.returncode}")
                 logger.error("Pipeline stderr:")
                 logger.error(result.stderr)
                 return False
                 
         except subprocess.TimeoutExpired:
-            logger.error("❌ Pipeline timed out after 2 hours")
+            logger.error("ERROR: Pipeline timed out after 2 hours")
             return False
         except Exception as e:
-            logger.error(f"❌ Error running pipeline: {e}")
+            logger.error(f"ERROR: Error running pipeline: {e}")
             return False
 
 class WebhookServer:
@@ -215,12 +215,12 @@ class WebhookServer:
     
     def run(self):
         """Run the webhook server"""
-        logger.info(f"🌐 Starting webhook server on port {self.port}")
+        logger.info(f"Starting webhook server on port {self.port}")
         self.app.run(host='0.0.0.0', port=self.port, debug=False)
 
 def main():
     """Main function"""
-    logger.info("🎯 Starting Guardian AI Local Pipeline Listener")
+    logger.info("Starting Guardian AI Local Pipeline Listener")
     logger.info(f"Repository path: {REPO_PATH}")
     
     # Initialize components
@@ -233,18 +233,18 @@ def main():
     if webhook_mode:
         # Run webhook server
         webhook_server = WebhookServer(WEBHOOK_PORT, pipeline_runner, github_monitor)
-        logger.info(f"🔗 Webhook URL: http://localhost:{WEBHOOK_PORT}/webhook")
-        logger.info(f"📊 Status URL: http://localhost:{WEBHOOK_PORT}/status")
+        logger.info(f"Webhook URL: http://localhost:{WEBHOOK_PORT}/webhook")
+        logger.info(f"Status URL: http://localhost:{WEBHOOK_PORT}/status")
         webhook_server.run()
     else:
         # Run polling mode
-        logger.info(f"🔄 Starting polling mode (interval: {POLL_INTERVAL}s)")
-        logger.info("💡 Use --webhook flag to run webhook server instead")
+        logger.info(f"Starting polling mode (interval: {POLL_INTERVAL}s)")
+        logger.info("Use --webhook flag to run webhook server instead")
         
         try:
             while True:
                 if github_monitor.check_for_updates():
-                    logger.info("📥 New changes detected, pulling and running pipeline...")
+                    logger.info("New changes detected, pulling and running pipeline...")
                     
                     if github_monitor.pull_latest_changes():
                         pipeline_runner.run_pipeline()
@@ -254,9 +254,9 @@ def main():
                 time.sleep(POLL_INTERVAL)
                 
         except KeyboardInterrupt:
-            logger.info("👋 Stopping pipeline listener...")
+            logger.info("Stopping pipeline listener...")
         except Exception as e:
-            logger.error(f"❌ Unexpected error: {e}")
+            logger.error(f"Unexpected error: {e}")
 
 if __name__ == "__main__":
     main() 

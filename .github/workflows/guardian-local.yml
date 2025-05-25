@@ -1,11 +1,17 @@
-name: Run Guardian AI Pipeline Locally
+name: Run Guardian AI Pipeline Locally (Disabled - Self-hosted runner required)
 
+# Disabled: This workflow requires a self-hosted runner with local dataset access
+# Use guardian-local-trigger.yml instead for the new local GPU execution system
+# on:
+#   push:
+#     branches: [main]
+#   pull_request:
+#     branches: [main]
+#   workflow_dispatch:  # Allow manual triggering
+
+# Uncomment the 'on' section above if you have a self-hosted GitHub Actions runner
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:  # Allow manual triggering
+  workflow_dispatch:  # Manual triggering only
 
 jobs:
   run_guardian_local:
@@ -18,6 +24,19 @@ jobs:
       CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
 
     steps:
+      - name: ⚠️ Self-hosted Runner Notice
+        run: |
+          echo "⚠️  WARNING: This workflow requires a self-hosted GitHub Actions runner"
+          echo "🏠 Use the new local GPU execution system instead:"
+          echo "   1. Run: start_local_listener.bat (Windows) or python local_pipeline_listener.py"
+          echo "   2. Trigger via: guardian-local-trigger.yml workflow"
+          echo "   3. See: LOCAL_EXECUTION_GUIDE.md for setup instructions"
+          echo ""
+          echo "🔧 To use this workflow:"
+          echo "   1. Set up a self-hosted GitHub Actions runner"
+          echo "   2. Ensure local dataset is available at data/Guardian_Dataset"
+          echo "   3. Uncomment the 'on' triggers in this workflow"
+
       - name: Checkout code
         uses: actions/checkout@v4
 
