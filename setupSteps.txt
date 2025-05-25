@@ -78,3 +78,7 @@ api {
 pip install --upgrade clearml
 
 pip install optuna
+
+
+# testing github actions locally 
+winget install nektos.act

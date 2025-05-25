@@ -41,6 +41,16 @@ clearml.conf
 .clearml/
 *.conf
 
+# Secrets and credentials
+.secrets
+.env.local
+.env.production
+.env.staging
+*.key
+*.pem
+secrets.json
+credentials.json
+
 # Data directories
 data/
 datasets/
