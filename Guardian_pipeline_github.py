@@ -27,6 +27,130 @@ def download_and_setup_dataset(
     fallback_url: str = None
 ) -> str | None:
     """Download dataset from ClearML or fallback URL and ensure proper structure."""
+    import pathlib
+    import os
+    import shutil
+    import urllib.request
+    import zipfile
+    import json
+    import logging
+    from clearml import Dataset
+    
+    def create_sample_dataset(dataset_path: pathlib.Path, logger):
+        """Create a minimal sample dataset for testing purposes."""
+        logger.info("Creating sample dataset structure...")
+        
+        action_classes = ["Falling", "No Action", "Waving"]
+        
+        for action in action_classes:
+            action_dir = dataset_path / action
+            action_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create a sample keypoints file
+            sample_keypoints = []
+            for frame_idx in range(30):  # 30 frames
+                frame_data = {
+                    "keypoints": [[
+                        [100 + frame_idx + i, 100 + frame_idx + i, 0.9] for i in range(17)  # 17 keypoints with x, y, confidence
+                    ]]
+                }
+                sample_keypoints.append(frame_data)
+            
+            # Save sample file
+            sample_file = action_dir / f"sample_{action.lower().replace(' ', '_')}_keypoints.json"
+            with open(sample_file, 'w') as f:
+                json.dump(sample_keypoints, f)
+            
+            logger.info(f"Created sample file: {sample_file}")
+
+    def validate_and_fix_dataset_structure(dataset_path: pathlib.Path, logger):
+        """Validate and fix the dataset structure to match expected format."""
+        logger.info("Validating dataset structure...")
+        
+        expected_classes = ["Falling", "No Action", "Waving"]
+        
+        # Check if expected directories exist
+        missing_dirs = []
+        for class_name in expected_classes:
+            class_dir = dataset_path / class_name
+            if not class_dir.exists():
+                missing_dirs.append(class_name)
+        
+        if missing_dirs:
+            logger.warning(f"Missing directories: {missing_dirs}")
+            
+            # Try to find alternative directory names and map them
+            existing_dirs = [d.name for d in dataset_path.iterdir() if d.is_dir()]
+            logger.info(f"Existing directories: {existing_dirs}")
+            
+            # Create mapping for common variations
+            class_mappings = {
+                "falling": "Falling",
+                "fall": "Falling", 
+                "no_action": "No Action",
+                "noaction": "No Action",
+                "no-action": "No Action",
+                "normal": "No Action",
+                "waving": "Waving",
+                "wave": "Waving",
+                "hand_wave": "Waving"
+            }
+            
+            # Try to rename directories to match expected format
+            for existing_dir in existing_dirs:
+                normalized_name = existing_dir.lower().replace(" ", "_").replace("-", "_")
+                if normalized_name in class_mappings:
+                    old_path = dataset_path / existing_dir
+                    new_path = dataset_path / class_mappings[normalized_name]
+                    if not new_path.exists():
+                        old_path.rename(new_path)
+                        logger.info(f"Renamed '{existing_dir}' to '{class_mappings[normalized_name]}'")
+            
+            # Create any still missing directories with sample data
+            for class_name in expected_classes:
+                class_dir = dataset_path / class_name
+                if not class_dir.exists():
+                    logger.warning(f"Creating missing directory: {class_name}")
+                    class_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Create a minimal sample file
+                    sample_keypoints = []
+                    for frame_idx in range(20):
+                        frame_data = {
+                            "keypoints": [[
+                                [50 + frame_idx + i, 50 + frame_idx + i, 0.8] for i in range(17)
+                            ]]
+                        }
+                        sample_keypoints.append(frame_data)
+                    
+                    sample_file = class_dir / f"sample_{class_name.lower().replace(' ', '_')}_keypoints.json"
+                    with open(sample_file, 'w') as f:
+                        json.dump(sample_keypoints, f)
+                    logger.info(f"Created sample file for {class_name}")
+        
+        # Validate that each directory has keypoints files
+        for class_name in expected_classes:
+            class_dir = dataset_path / class_name
+            keypoint_files = list(class_dir.glob("*keypoints.json"))
+            if not keypoint_files:
+                logger.warning(f"No keypoints files found in {class_name}, creating sample...")
+                # Create sample as above
+                sample_keypoints = []
+                for frame_idx in range(25):
+                    frame_data = {
+                        "keypoints": [[
+                            [60 + frame_idx + i, 60 + frame_idx + i, 0.85] for i in range(17)
+                        ]]
+                    }
+                    sample_keypoints.append(frame_data)
+                
+                sample_file = class_dir / f"generated_{class_name.lower().replace(' ', '_')}_keypoints.json"
+                with open(sample_file, 'w') as f:
+                    json.dump(sample_keypoints, f)
+                logger.info(f"Generated keypoints file for {class_name}")
+            else:
+                logger.info(f"Found {len(keypoint_files)} keypoints files in {class_name}")
+    
     local_path_obj = pathlib.Path(local_target_path).resolve()
     comp_logger = logging.getLogger(f"Component.{download_and_setup_dataset.__name__}")
     
@@ -109,120 +233,7 @@ def download_and_setup_dataset(
         comp_logger.error(f"Error in download_and_setup_dataset: {e}", exc_info=True)
         return None
 
-def create_sample_dataset(dataset_path: pathlib.Path, logger):
-    """Create a minimal sample dataset for testing purposes."""
-    logger.info("Creating sample dataset structure...")
-    
-    action_classes = ["Falling", "No Action", "Waving"]
-    
-    for action in action_classes:
-        action_dir = dataset_path / action
-        action_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create a sample keypoints file
-        sample_keypoints = []
-        for frame_idx in range(30):  # 30 frames
-            frame_data = {
-                "keypoints": [[
-                    [100 + frame_idx, 100 + frame_idx, 0.9] * 17  # 17 keypoints with x, y, confidence
-                ]]
-            }
-            sample_keypoints.append(frame_data)
-        
-        # Save sample file
-        sample_file = action_dir / f"sample_{action.lower().replace(' ', '_')}_keypoints.json"
-        with open(sample_file, 'w') as f:
-            json.dump(sample_keypoints, f)
-        
-        logger.info(f"Created sample file: {sample_file}")
 
-def validate_and_fix_dataset_structure(dataset_path: pathlib.Path, logger):
-    """Validate and fix the dataset structure to match expected format."""
-    logger.info("Validating dataset structure...")
-    
-    expected_classes = ["Falling", "No Action", "Waving"]
-    
-    # Check if expected directories exist
-    missing_dirs = []
-    for class_name in expected_classes:
-        class_dir = dataset_path / class_name
-        if not class_dir.exists():
-            missing_dirs.append(class_name)
-    
-    if missing_dirs:
-        logger.warning(f"Missing directories: {missing_dirs}")
-        
-        # Try to find alternative directory names and map them
-        existing_dirs = [d.name for d in dataset_path.iterdir() if d.is_dir()]
-        logger.info(f"Existing directories: {existing_dirs}")
-        
-        # Create mapping for common variations
-        class_mappings = {
-            "falling": "Falling",
-            "fall": "Falling", 
-            "no_action": "No Action",
-            "noaction": "No Action",
-            "no-action": "No Action",
-            "normal": "No Action",
-            "waving": "Waving",
-            "wave": "Waving",
-            "hand_wave": "Waving"
-        }
-        
-        # Try to rename directories to match expected format
-        for existing_dir in existing_dirs:
-            normalized_name = existing_dir.lower().replace(" ", "_").replace("-", "_")
-            if normalized_name in class_mappings:
-                old_path = dataset_path / existing_dir
-                new_path = dataset_path / class_mappings[normalized_name]
-                if not new_path.exists():
-                    old_path.rename(new_path)
-                    logger.info(f"Renamed '{existing_dir}' to '{class_mappings[normalized_name]}'")
-        
-        # Create any still missing directories with sample data
-        for class_name in expected_classes:
-            class_dir = dataset_path / class_name
-            if not class_dir.exists():
-                logger.warning(f"Creating missing directory: {class_name}")
-                class_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Create a minimal sample file
-                sample_keypoints = []
-                for frame_idx in range(20):
-                    frame_data = {
-                        "keypoints": [[
-                            [50 + frame_idx + i, 50 + frame_idx + i, 0.8] for i in range(17)
-                        ]]
-                    }
-                    sample_keypoints.append(frame_data)
-                
-                sample_file = class_dir / f"sample_{class_name.lower().replace(' ', '_')}_keypoints.json"
-                with open(sample_file, 'w') as f:
-                    json.dump(sample_keypoints, f)
-                logger.info(f"Created sample file for {class_name}")
-    
-    # Validate that each directory has keypoints files
-    for class_name in expected_classes:
-        class_dir = dataset_path / class_name
-        keypoint_files = list(class_dir.glob("*keypoints.json"))
-        if not keypoint_files:
-            logger.warning(f"No keypoints files found in {class_name}, creating sample...")
-            # Create sample as above
-            sample_keypoints = []
-            for frame_idx in range(25):
-                frame_data = {
-                    "keypoints": [[
-                        [60 + frame_idx + i, 60 + frame_idx + i, 0.85] for i in range(17)
-                    ]]
-                }
-                sample_keypoints.append(frame_data)
-            
-            sample_file = class_dir / f"generated_{class_name.lower().replace(' ', '_')}_keypoints.json"
-            with open(sample_file, 'w') as f:
-                json.dump(sample_keypoints, f)
-            logger.info(f"Generated keypoints file for {class_name}")
-        else:
-            logger.info(f"Found {len(keypoint_files)} keypoints files in {class_name}")
 
 # ============================================================================
 # COMPONENT 2: DATA PREPARATION (SAME AS ORIGINAL)
