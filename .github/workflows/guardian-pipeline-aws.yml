@@ -117,10 +117,12 @@ jobs:
           echo "🚀 Checking model deployment status..."
           
           python -c "
-          from clearml import Model, Task
+          from clearml import Model
           import sys
           
           try:
+              print('🔍 Searching for deployed models...')
+              
               # Check for deployed models directly
               models = Model.query_models(
                   project_name='Guardian_Training',
@@ -131,33 +133,50 @@ jobs:
               )
               
               if not models:
-                  print('❌ No deployed models found')
+                  print('❌ No deployed models found with deployment tags')
+                  
                   # Try to find any recent models
+                  print('🔍 Searching for any recent models...')
                   recent_models = Model.query_models(
                       project_name='Guardian_Training',
                       model_name='BiLSTM_ActionRecognition',
-                      max_results=1,
+                      max_results=3,
                       order_by=['-created']
                   )
+                  
                   if recent_models:
-                      print(f'⚠️  Found recent model but not deployed: {recent_models[0].id}')
+                      print(f'📋 Found {len(recent_models)} recent models:')
+                      for i, m in enumerate(recent_models):
+                          print(f'   {i+1}. Model ID: {m.id}')
+                          print(f'      Created: {m.created}')
+                          print(f'      Published: {m.published}')
+                          print(f'      Tags: {m.tags}')
+                  else:
+                      print('❌ No models found at all')
+                  
                   sys.exit(1)
               
               model = models[0]
               print(f'✅ Found deployed model!')
               print(f'🏷️  Model ID: {model.id}')
               print(f'📅 Created: {model.created}')
+              print(f'🏷️  Tags: {model.tags}')
               
               # Get model metadata for accuracy
-              design = model.get_model_design()
-              if design and 'test_accuracy' in design:
-                  accuracy = design['test_accuracy']
-                  print(f'📊 Test Accuracy: {accuracy:.2f}%')
-                             else:
-                   print('📊 Test Accuracy: Not available in model metadata')
+              try:
+                  design = model.get_model_design()
+                  if design and 'test_accuracy' in design:
+                      accuracy = design['test_accuracy']
+                      print(f'📊 Test Accuracy: {accuracy:.2f}%')
+                  else:
+                      print('📊 Test Accuracy: Not available in model metadata')
+              except Exception as e:
+                  print(f'⚠️  Could not get model design: {e}')
                   
           except Exception as e:
               print(f'❌ Error checking deployment: {e}')
+              import traceback
+              traceback.print_exc()
               sys.exit(1)
           "
 
