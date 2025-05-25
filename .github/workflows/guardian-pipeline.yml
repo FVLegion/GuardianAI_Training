@@ -19,10 +19,10 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Verify Python installation
+        run: |
+          python --version
+          python -c "import sys; print(f'Python executable: {sys.executable}')"
 
       - name: Verify GPU availability
         run: |
@@ -68,18 +68,18 @@ jobs:
 
       - name: Pipeline Summary
         if: always()
-        shell: pwsh
+        shell: powershell
         run: |
-          echo "## Guardian AI Pipeline Summary" >> $env:GITHUB_STEP_SUMMARY
-          echo "- **Status**: ${{ job.status }}" >> $env:GITHUB_STEP_SUMMARY
-          echo "- **Runner**: KONG-LEGION (Self-hosted GPU)" >> $env:GITHUB_STEP_SUMMARY
-          echo "- **OS**: Windows" >> $env:GITHUB_STEP_SUMMARY
-          echo "- **Trigger**: ${{ github.event_name }}" >> $env:GITHUB_STEP_SUMMARY
-          echo "- **Branch**: ${{ github.head_ref || github.ref_name }}" >> $env:GITHUB_STEP_SUMMARY
-          echo "- **Commit**: ${{ github.sha }}" >> $env:GITHUB_STEP_SUMMARY
-          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "## Guardian AI Pipeline Summary" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          echo "- **Status**: ${{ job.status }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          echo "- **Runner**: KONG-LEGION (Self-hosted GPU)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          echo "- **OS**: Windows" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          echo "- **Trigger**: ${{ github.event_name }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          echo "- **Branch**: ${{ github.head_ref || github.ref_name }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          echo "- **Commit**: ${{ github.sha }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          echo "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           if (Test-Path "training_metrics.png") {
-            echo "✅ Training completed successfully" >> $env:GITHUB_STEP_SUMMARY
+            echo "✅ Training completed successfully" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           } else {
-            echo "❌ Training failed or incomplete" >> $env:GITHUB_STEP_SUMMARY
+            echo "❌ Training failed or incomplete" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           } 
