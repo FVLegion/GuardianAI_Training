@@ -54,7 +54,7 @@ jobs:
             ls -la data/Guardian_Dataset/ | head -10
             
           else
-            echo "⚠️  Absolute dataset path not found. Pipeline will create mock data."
+            echo "⚠️  Absolute dataset path not found. Pipeline will need to download the dataset."
           fi
 
       - name: Verify ClearML Configuration

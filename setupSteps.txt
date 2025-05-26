@@ -82,3 +82,8 @@ pip install optuna
 
 # testing github actions locally 
 winget install nektos.act
+
+
+# MongoDB Setup
+python mongodb_setup.py
+python -m pip install "pymongo[srv]"

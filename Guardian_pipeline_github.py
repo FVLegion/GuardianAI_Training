@@ -23,61 +23,14 @@ start_time = time.time()
 def download_and_setup_dataset(
     dataset_name: str,
     dataset_project: str,
-    local_target_path: str,
-    fallback_url: str = None
+    local_target_path: str
 ) -> str | None:
-    """Download actual dataset from ClearML with proper error handling and fallback."""
+    """Download actual dataset from ClearML with proper error handling."""
     import pathlib
     import os
     import shutil
-    import urllib.request
-    import zipfile
-    import json
     import logging
     from clearml import Dataset
-    
-    def create_mock_dataset(local_path: str) -> bool:
-        """Create a minimal mock dataset for testing when real dataset is unavailable."""
-        try:
-            local_path_obj = pathlib.Path(local_path)
-            local_path_obj.mkdir(parents=True, exist_ok=True)
-            
-            # Create action class directories
-            action_classes = ["Falling", "No Action", "Waving"]
-            
-            for action in action_classes:
-                action_dir = local_path_obj / action
-                action_dir.mkdir(exist_ok=True)
-                
-                # Create a few mock keypoint files for each action
-                for i in range(3):  # Create 3 mock files per action
-                    mock_keypoints = []
-                    # Create 10 frames of mock data
-                    for frame in range(10):
-                        # Mock keypoints for 17 joints (COCO format)
-                        keypoints = []
-                        for joint in range(17):
-                            x = 100 + joint * 10 + frame * 2  # Mock x coordinate
-                            y = 100 + joint * 5 + frame * 3   # Mock y coordinate
-                            confidence = 0.8 + (joint % 3) * 0.1  # Mock confidence
-                            keypoints.extend([x, y, confidence])
-                        
-                        mock_keypoints.append({
-                            "frame": frame,
-                            "keypoints": [keypoints]  # Wrap in list for person detection
-                        })
-                    
-                    # Save mock keypoints file
-                    mock_file = action_dir / f"mock_{action.lower().replace(' ', '_')}_{i}_keypoints.json"
-                    with open(mock_file, 'w') as f:
-                        json.dump(mock_keypoints, f)
-            
-            print(f"Created mock dataset at {local_path}")
-            return True
-            
-        except Exception as e:
-            print(f"Failed to create mock dataset: {e}")
-            return False
     
     def download_real_dataset_from_clearml(dataset_name: str, project_name: str, local_path: str) -> bool:
         """
@@ -241,31 +194,22 @@ def download_and_setup_dataset(
         
         logger.info(f"Total keypoints files found: {total_keypoint_files}")
         
-        # If we still don't have the expected structure, let's see if there's a nested structure
+        # If we still don't have the expected structure, check for nested structure
         if total_keypoint_files == 0:
             logger.info("No keypoints files found in expected locations. Checking for nested structures...")
             for item in dataset_path.iterdir():
                 if item.is_dir():
                     nested_files = list(item.rglob("*.json"))
                     if nested_files:
-                        logger.info(f"Found {len(nested_files)} JSON files in {item.name} subdirectory")
-                        logger.info(f"Example nested files: {[f.name for f in nested_files[:5]]}")
-    
-    local_path_obj = pathlib.Path(local_target_path).resolve()
-    comp_logger = logging.getLogger(f"Component.{download_and_setup_dataset.__name__}")
-    
+                        logger.info(f"Found {len(nested_files)} JSON files in nested structure under {item.name}")
+                        logger.info(f"Example nested files: {[str(f.relative_to(dataset_path)) for f in nested_files[:3]]}")
+
     try:
-        comp_logger.info(f"Starting dataset setup for '{dataset_name}' in project '{dataset_project}'")
-        comp_logger.info(f"Target local path: {local_path_obj}")
+        comp_logger = logging.getLogger(f"Component.{download_and_setup_dataset.__name__}")
+        comp_logger.info(f"Setting up dataset: {dataset_name} from project: {dataset_project}")
         
-        # Check ClearML environment variables
-        clearml_api_host = os.getenv('CLEARML_API_HOST')
-        clearml_api_key = os.getenv('CLEARML_API_ACCESS_KEY')
-        clearml_api_secret = os.getenv('CLEARML_API_SECRET_KEY')
-        
-        comp_logger.info(f"ClearML API Host: {'Set' if clearml_api_host else 'Not Set'}")
-        comp_logger.info(f"ClearML API Key: {'Set' if clearml_api_key else 'Not Set'}")
-        comp_logger.info(f"ClearML API Secret: {'Set' if clearml_api_secret else 'Not Set'}")
+        # Create Path objects
+        local_path_obj = pathlib.Path(local_target_path)
         
         # Use the robust download function
         success = download_real_dataset_from_clearml(
@@ -275,40 +219,13 @@ def download_and_setup_dataset(
         )
         
         if not success:
-            comp_logger.warning(f"Failed to download dataset '{dataset_name}' from ClearML")
-            
-            # Try fallback URL if provided
-            if fallback_url:
-                comp_logger.info(f"Attempting fallback download from URL: {fallback_url}")
-                
-                # Create target directory
-                local_path_obj.mkdir(parents=True, exist_ok=True)
-                
-                # Download from URL
-                zip_path = local_path_obj / "dataset.zip"
-                urllib.request.urlretrieve(fallback_url, zip_path)
-                
-                # Extract zip file
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(local_path_obj)
-                
-                # Remove zip file
-                zip_path.unlink()
-                comp_logger.info("Fallback dataset downloaded and extracted")
-                success = True
-            else:
-                comp_logger.warning("No fallback URL provided. Creating mock dataset for testing...")
-                success = create_mock_dataset(str(local_path_obj))
-                if success:
-                    comp_logger.info("Mock dataset created successfully for testing purposes")
-                else:
-                    comp_logger.error("Failed to create mock dataset")
-                    return None
+            comp_logger.error(f"Failed to download dataset '{dataset_name}' from ClearML")
+            return None
         
         # Validate and fix dataset structure
         validate_and_fix_dataset_structure(local_path_obj, comp_logger)
         
-        # Final check - ensure we have some data (be flexible about file types and structure)
+        # Final check - ensure we have some data
         total_files = 0
         total_json_files = 0
         
@@ -335,38 +252,20 @@ def download_and_setup_dataset(
                 example_files = [f.relative_to(local_path_obj) for f in all_json_files[:5]]
                 comp_logger.info(f"Example files: {example_files}")
         
-        # More lenient check - if we have any JSON files or the directory exists, proceed
         if total_files == 0 and total_json_files == 0:
-            # Check if the directory at least exists (mock dataset might have been created)
-            if local_path_obj.exists() and local_path_obj.is_dir():
-                # List what's actually in the directory
-                all_items = list(local_path_obj.rglob("*"))
-                comp_logger.warning(f"Dataset directory exists but no JSON files found. Contents: {[str(item.relative_to(local_path_obj)) for item in all_items[:10]]}")
-                
-                # If we created a mock dataset, there should be files - this indicates a problem
-                if success:  # success variable indicates we tried to create mock data
-                    comp_logger.error("Mock dataset creation may have failed silently")
-                    return None
-                else:
-                    comp_logger.error("No dataset files found and no mock data was created")
-                    return None
-            else:
-                comp_logger.error("Dataset directory does not exist")
-                return None
+            comp_logger.error("No dataset files found")
+            return None
         
         if total_files > 0:
             comp_logger.info(f"Dataset validation complete. Found {total_files} keypoints files in expected structure")
         else:
             comp_logger.info(f"Dataset validation complete. Found {total_json_files} JSON files (structure may need adjustment)")
         
-        # Return success even if structure isn't perfect - the data preparation step can handle it
         return str(local_path_obj) if local_path_obj.exists() and local_path_obj.is_dir() else None
 
     except Exception as e:
         comp_logger.error(f"Error in download_and_setup_dataset: {e}", exc_info=True)
         return None
-
-
 
 # ============================================================================
 # COMPONENT 2: DATA PREPARATION (SAME AS ORIGINAL)
@@ -1565,16 +1464,12 @@ def guardian_github_pipeline():
         dataset_path = possible_paths[0]
         logging.info(f"No existing dataset found. Will use: {dataset_path}")
     
-    # Optional: Add fallback URL for dataset download
-    fallback_url = None  # You can add a direct download URL here
-
     # Step 1: Download and setup dataset with validation
     logging.info("Starting dataset download and setup...")
     dataset_path_output = download_and_setup_dataset(
         dataset_name=dataset_name,
         dataset_project=dataset_project,
-        local_target_path=str(dataset_path),
-        fallback_url=fallback_url
+        local_target_path=str(dataset_path)
     )
     if not dataset_path_output:
         raise ValueError("Dataset setup failed.")

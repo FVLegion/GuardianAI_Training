@@ -1,14 +1,14 @@
 # Guardian AI Training Pipeline
 
-A simple, clean ClearML-powered training pipeline for human action recognition using BiLSTM with attention mechanism.
+A comprehensive ClearML-powered training pipeline for human action recognition using BiLSTM with attention mechanism.
 
 ## 🎯 Overview
 
-This pipeline trains a deep learning model to recognize human actions (Falling, No Action, Waving) from pose keypoint data using:
+This repository contains the Guardian AI training pipeline that recognizes human actions (Falling, No Action, Waving) from pose keypoint data using:
 - **BiLSTM with Attention** for temporal sequence modeling
 - **ClearML** for experiment tracking and dataset management
 - **Hyperparameter Optimization** for automated model tuning
-- **Self-hosted GPU runner** for efficient training
+- **GitHub Actions** with self-hosted GPU runners for CI/CD
 
 ## 🚀 Quick Start
 
@@ -37,13 +37,20 @@ This pipeline trains a deep learning model to recognize human actions (Falling, 
    - Close a pull request to `main`
    - Manual trigger via GitHub Actions "Run workflow" button
 
-## 📊 What the Pipeline Does
+## 📊 Pipeline Components
+
+### Core Pipeline Files
+- **`Guardian_pipeline.py`** - Main local training pipeline
+- **`Guardian_pipeline_github.py`** - GitHub Actions optimized pipeline
+
+### What the Pipeline Does
 
 1. **Downloads Dataset** from ClearML (Guardian_Dataset)
 2. **Preprocesses Data** - pose keypoint sequences with normalization
 3. **Trains BiLSTM Model** with attention mechanism
 4. **Optimizes Hyperparameters** - 50 trials with ClearML HPO
 5. **Evaluates Best Model** with visualizations and metrics
+6. **Publishes Model** to ClearML for deployment
 
 ## 🔧 Key Features
 
@@ -52,6 +59,7 @@ This pipeline trains a deep learning model to recognize human actions (Falling, 
 - **Experiment Tracking**: All results logged to ClearML
 - **Hyperparameter Optimization**: Finds best model configuration
 - **Rich Visualizations**: Attention maps, confusion matrices, training curves
+- **CI/CD Integration**: Automated pipeline execution via GitHub Actions
 
 ## 📈 Results & Outputs
 
@@ -60,6 +68,7 @@ This pipeline trains a deep learning model to recognize human actions (Falling, 
 - Attention analysis plots
 - Model artifacts (.pth files)
 - Complete experiment tracking in ClearML
+- Published model ID for deployment
 
 ## 🛠️ Local Development
 
@@ -67,28 +76,56 @@ This pipeline trains a deep learning model to recognize human actions (Falling, 
 # Install dependencies
 pip install -r requirements.txt
 
-# Run pipeline locally (optional)
+# Run local pipeline
 python Guardian_pipeline.py
+
+# Run GitHub-optimized pipeline locally
+python Guardian_pipeline_github.py
 ```
 
-## 📁 Project Structure
+## 📁 Repository Structure
 
 ```
-├── Guardian_pipeline.py              # Main pipeline script
+├── Guardian_pipeline.py              # Main local training pipeline
+├── Guardian_pipeline_github.py       # GitHub Actions optimized pipeline
 ├── requirements.txt                  # Python dependencies
-├── upload_dataset.py                 # Dataset upload utility
 ├── setup.py                          # ClearML setup helper
-├── .github/workflows/guardian-pipeline.yml  # GitHub Actions workflow
-├── data/                             # Local dataset (if any)
-└── evaluation_outputs/               # Generated visualizations
+├── clearml.conf                      # ClearML configuration
+├── .github/
+│   └── workflows/
+│       └── guardian-pipeline-aws.yml # GitHub Actions workflow
+├── actions-runner/                   # Self-hosted runner setup
+├── training_utils/                   # Training utility modules
+├── data/                             # Local dataset directory
+└── README.md                         # This file
 ```
 
-## 🔗 Monitoring
+## 🔄 GitHub Actions Workflow
+
+The repository includes a complete CI/CD pipeline that:
+- Automatically triggers on code changes
+- Runs on self-hosted GPU runners
+- Executes the Guardian pipeline
+- Uploads results and artifacts
+- Provides detailed logging and monitoring
+
+## 🔗 Monitoring & Results
 
 - **ClearML Dashboard**: https://app.clear.ml/
 - **GitHub Actions**: Check the Actions tab for pipeline runs
 - **Artifacts**: Download training outputs from GitHub Actions
+- **Model Registry**: Published models available in ClearML
+
+## 🧹 Repository Maintenance
+
+To clean up unnecessary files and keep only Guardian pipeline essentials:
+
+```bash
+python cleanup_repository.py
+```
+
+This will remove temporary model files, test scripts, and other non-essential components while preserving the core Guardian pipeline functionality.
 
 ---
 
-**Simple. Clean. Effective.** 🎯
+**Guardian AI: Protecting through Intelligence** 🛡️
