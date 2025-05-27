@@ -4,31 +4,39 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:  # Allow manual trigger
 
 jobs:
   run-pipeline:
     runs-on: [self-hosted, Linux, X64, guardian, gpu]   # must match the labels you set
     timeout-minutes: 500 # 8.33 hours
     steps:
+      # 1. Checkout code
       - name: Check out code
         uses: actions/checkout@v4
 
+      # 2. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
+      # 3. Install system dependencies
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libgl1-mesa-glx
           sudo apt-get install -y libglib2.0-0
 
+      # 4. Install Python dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # Ensure MongoDB dependencies are installed
+          pip install pymongo gridfs
 
+      # 5. Setup dataset symlink (for self-hosted runner)
       - name: Setup dataset symlink
         run: |
           echo "🔗 Setting up dataset symlink for self-hosted runner..."
@@ -57,14 +65,29 @@ jobs:
             echo "⚠️  Absolute dataset path not found. Pipeline will need to download the dataset."
           fi
 
+      # 6. Create .secrets file with MongoDB URI if provided
+      - name: Setup MongoDB secrets file
+        run: |
+          if [ -n "$MONGODB_URI" ]; then
+            echo "MONGODB_URI=$MONGODB_URI" > .secrets
+            echo "✅ Created .secrets file with MongoDB URI"
+          else
+            echo "⚠️ MONGODB_URI not provided, model distribution will not work"
+          fi
+
+      # 7. Verify ClearML configuration
       - name: Verify ClearML Configuration
         env:
           CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
           CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
           CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
+          CLEARML_WEB_HOST: ${{ secrets.CLEARML_WEB_HOST }}
+          CLEARML_FILES_HOST: ${{ secrets.CLEARML_FILES_HOST }}
         run: |
           echo "🔍 Checking ClearML configuration..."
           echo "CLEARML_API_HOST: ${CLEARML_API_HOST:-'Not Set'}"
+          echo "CLEARML_WEB_HOST: ${CLEARML_WEB_HOST:-'Not Set'}"
+          echo "CLEARML_FILES_HOST: ${CLEARML_FILES_HOST:-'Not Set'}"
           echo "CLEARML_API_ACCESS_KEY: ${CLEARML_API_ACCESS_KEY:+Set}"
           echo "CLEARML_API_SECRET_KEY: ${CLEARML_API_SECRET_KEY:+Set}"
           
@@ -81,12 +104,55 @@ jobs:
               print('This may be expected if credentials are not configured')
           "
 
+      # 8. Verify MongoDB configuration
+      - name: Verify MongoDB Configuration
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+        run: |
+          echo "🔍 Checking MongoDB configuration..."
+          if [ -n "$MONGODB_URI" ]; then
+            echo "✅ MongoDB URI is configured"
+            python -c "
+            try:
+                from pymongo import MongoClient
+                import os
+                client = MongoClient(os.environ['MONGODB_URI'])
+                db = client.admin
+                server_info = db.command('serverStatus')
+                print(f'✅ MongoDB connection successful - connected to version {server_info.get(\"version\", \"unknown\")}')
+                print(f'✅ MongoDB server: {server_info.get(\"host\", \"unknown\")}')
+            except Exception as e:
+                print(f'❌ MongoDB connection failed: {e}')
+                # Don't fail the workflow, we'll continue without MongoDB
+                print('Will continue without MongoDB storage')
+            "
+          else
+            echo "⚠️ MongoDB URI not configured. Model will not be stored in MongoDB."
+          fi
+
+      # 9. Run the Guardian AI pipeline
       - name: Run ClearML pipeline
         env:
           CLEARML_API_ACCESS_KEY: ${{ secrets.CLEARML_API_ACCESS_KEY }}
           CLEARML_API_SECRET_KEY: ${{ secrets.CLEARML_API_SECRET_KEY }}
           CLEARML_API_HOST: ${{ secrets.CLEARML_API_HOST }}
+          CLEARML_WEB_HOST: ${{ secrets.CLEARML_WEB_HOST }}
+          CLEARML_FILES_HOST: ${{ secrets.CLEARML_FILES_HOST }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: |
+          echo "🚀 Starting Guardian AI pipeline..."
           python Guardian_pipeline_github.py
+          
+      # 10. Upload training artifacts
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: training-artifacts
+          path: |
+            *.png
+            *.pth
+            *.json
+          retention-days: 7
 
   

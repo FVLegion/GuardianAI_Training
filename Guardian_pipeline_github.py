@@ -1345,15 +1345,37 @@ def evaluate_model_github(
     name="Deploy_Model_GitHub",
     return_values=["deployment_status"],
     cache=False,
-    packages=["clearml"]
+    packages=["clearml", "pymongo", "torch", "gridfs"]
 )
 def deploy_model_github(
     best_model_id: str,
+    best_model_path: str,
     test_accuracy: float,
-    min_accuracy_threshold: float = 85.0
+    min_accuracy_threshold: float = 85.0,
+    mongo_uri: str = None
 ):
-    """Deploy the best model if it meets accuracy threshold."""
+    """Deploy the best model if it meets accuracy threshold and save to MongoDB."""
     from clearml import Model, Task
+    import os
+    import torch
+    import json
+    import logging
+    import shutil
+    import sys
+    
+    # Add the current directory to the path for importing local modules
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    if current_dir not in sys.path:
+        sys.path.append(current_dir)
+    
+    # Try to import the mongodb_model_distribution module
+    try:
+        from mongodb_model_distribution import GuardianModelDistribution
+        has_model_distribution = True
+        print("✅ Found mongodb_model_distribution module")
+    except ImportError:
+        has_model_distribution = False
+        print("⚠️ mongodb_model_distribution module not found. Will use basic MongoDB storage.")
     
     task = Task.init(
         project_name="Guardian_Training",
@@ -1385,6 +1407,15 @@ def deploy_model_github(
                 print(f"⚠️  Could not add tags: {tag_error}")
                 # Continue anyway - tags are not critical
             
+            # Get the best task to retrieve hyperparameters
+            best_task = Task.get_task(task_id=model.task)
+            if not best_task:
+                print("⚠️  Could not retrieve task for model hyperparameters")
+                hyperparams = {}
+            else:
+                hyperparams = best_task.get_parameters()
+                print(f"📋 Retrieved hyperparameters from task {best_task.id}")
+            
             # Update model metadata
             try:
                 model.update_design(config_dict={
@@ -1392,12 +1423,136 @@ def deploy_model_github(
                     "test_accuracy": test_accuracy,
                     "deployment_date": str(task.created),
                     "deployment_threshold": min_accuracy_threshold,
-                    "deployed_by": "GitHub Actions"
+                    "deployed_by": "GitHub Actions",
+                    "mongodb_stored": False  # Will update if MongoDB storage succeeds
                 })
                 print(f"📋 Updated model metadata")
             except Exception as metadata_error:
                 print(f"⚠️  Could not update metadata: {metadata_error}")
                 # Continue anyway - metadata is not critical
+            
+            # MongoDB integration - Store model weights and hyperparameters
+            if mongo_uri:
+                try:
+                    print(f"🔄 Connecting to MongoDB for model storage...")
+                    
+                    # Ensure the model path exists
+                    if not os.path.exists(best_model_path):
+                        model_path = model.get_local_copy()
+                        print(f"📥 Model weights downloaded to {model_path}")
+                    else:
+                        model_path = best_model_path
+                        print(f"📄 Using existing model weights at {model_path}")
+                    
+                    # Load model to extract architecture
+                    try:
+                        checkpoint = torch.load(model_path, map_location='cpu')
+                        print(f"✅ Model weights loaded successfully!")
+                    except Exception as e:
+                        print(f"⚠️ Error loading model weights: {e}")
+                        checkpoint = {}
+                    
+                    # Create model name with timestamp and accuracy
+                    model_name = f"guardian_model_{best_model_id[:8]}_{int(test_accuracy)}"
+                    
+                    # Prepare model metadata for distribution
+                    model_metadata = {
+                        "model_id": best_model_id,
+                        "test_accuracy": float(test_accuracy),
+                        "deployment_date": str(task.created),
+                        "training_task_id": str(best_task.id) if best_task else "unknown",
+                        "architecture": model.get_model_design() or {},
+                        "hyperparameters": hyperparams,
+                        "checkpoint_keys": list(checkpoint.keys()) if checkpoint else [],
+                        "input_size": hyperparams.get("General/input_size", {}).get("value", 34),
+                        "hidden_size": hyperparams.get("General/hidden_size", {}).get("value", 256),
+                        "num_layers": hyperparams.get("General/num_layers", {}).get("value", 4),
+                        "num_classes": hyperparams.get("General/num_classes", {}).get("value", 3),
+                        "framework": "PyTorch",
+                        "model_type": "BiLSTM_ActionRecognition",
+                        "description": "Guardian AI Action Recognition Model"
+                    }
+                    
+                    # Use the GuardianModelDistribution class if available
+                    if has_model_distribution:
+                        print("🔄 Using GuardianModelDistribution for model storage...")
+                        distributor = GuardianModelDistribution(uri=mongo_uri)
+                        
+                        if distributor.connect():
+                            # Upload model using the distribution system
+                            result = distributor.upload_model(
+                                model_path=model_path,
+                                model_metadata=model_metadata,
+                                model_name=model_name
+                            )
+                            
+                            if result:
+                                print(f"🗃️ Model uploaded to distribution system:")
+                                print(f"   Model Name: {result['model_name']}")
+                                print(f"   Document ID: {result['document_id']}")
+                                print(f"   Download Command: {result['download_command']}")
+                                
+                                # Update model metadata to reflect MongoDB storage
+                                model.update_design(config_dict={"mongodb_stored": True})
+                            else:
+                                print("❌ Failed to upload model to distribution system")
+                        else:
+                            print("❌ Failed to connect to MongoDB distribution system")
+                    else:
+                        # Fallback to basic MongoDB storage
+                        from pymongo import MongoClient
+                        import gridfs
+                        
+                        # Connect to MongoDB
+                        client = MongoClient(mongo_uri)
+                        db = client.guardian_models
+                        fs = gridfs.GridFS(db)
+                        
+                        # Store the model weights
+                        with open(model_path, 'rb') as f:
+                            weights_file_id = fs.put(
+                                f, 
+                                filename=f"{model_name}.pth",
+                                metadata={
+                                    "model_id": best_model_id,
+                                    "accuracy": float(test_accuracy),
+                                    "deployment_date": str(task.created)
+                                }
+                            )
+                        
+                        # Prepare model metadata and hyperparameters
+                        model_info = {
+                            "model_name": model_name,
+                            "model_id": best_model_id,
+                            "test_accuracy": float(test_accuracy),
+                            "weights_file_id": weights_file_id,
+                            "hyperparameters": hyperparams,
+                            "deployment_date": str(task.created),
+                            "deployment_status": "deployed",
+                            "architecture": model.get_model_design() or {},
+                            "checkpoint_keys": list(checkpoint.keys()) if checkpoint else [],
+                            "file_size_mb": os.path.getsize(model_path) / (1024 * 1024),
+                            "status": "available",
+                            "download_count": 0,
+                            "uploaded_at": str(task.created),
+                            "file_id": weights_file_id
+                        }
+                        
+                        # Store model metadata
+                        db.model_metadata.insert_one(model_info)
+                        
+                        print(f"🗃️ Model weights and metadata saved to MongoDB")
+                        print(f"   Model Name: {model_name}")
+                        print(f"   File Size: {model_info['file_size_mb']:.2f} MB")
+                        
+                        # Update model metadata to reflect MongoDB storage
+                        model.update_design(config_dict={"mongodb_stored": True})
+                    
+                except Exception as mongo_error:
+                    print(f"❌ MongoDB storage error: {mongo_error}")
+                    logger.report_text(f"MongoDB storage failed: {mongo_error}")
+            else:
+                print("ℹ️ MongoDB URI not provided, skipping database storage")
             
             logger.report_scalar("Deployment", "Status", 1, 0)  # 1 = deployed
             logger.report_scalar("Deployment", "Test_Accuracy", test_accuracy, 0)
@@ -1439,6 +1594,13 @@ def guardian_github_pipeline():
     # Setup paths
     dataset_name = "Guardian_Dataset" 
     dataset_project = "Guardian_Training" 
+    
+    # Get MongoDB URI from environment variable
+    mongo_uri = os.environ.get("MONGODB_URI", None)
+    if mongo_uri:
+        logging.info("MongoDB URI configured for model storage")
+    else:
+        logging.warning("MongoDB URI not found in environment variables. Models will not be stored in MongoDB.")
     
     # Multiple path options for your self-hosted runner
     possible_paths = [
@@ -1506,6 +1668,49 @@ def guardian_github_pipeline():
     )
     logging.info(f"HPO completed. Best task ID: {best_task_id}, Best model ID: {best_model_id}")
 
+    # Get the best model path from ClearML
+    try:
+        from clearml import Model
+        logging.info(f"Retrieving best model with ID: {best_model_id}")
+        
+        # Create a specific path for the best model that includes the model ID
+        best_model_filename = f"best_bilstm_github_{best_model_id}.pth"
+        best_model_path = os.path.join(os.getcwd(), best_model_filename)
+        
+        # Check if we already have this specific model
+        if os.path.exists(best_model_path):
+            logging.info(f"Best model already exists at {best_model_path}")
+        else:
+            # Download the model from ClearML by ID
+            best_model = Model(model_id=best_model_id)
+            downloaded_path = best_model.get_local_copy()
+            
+            # If the downloaded path is different from our desired path, copy it
+            if downloaded_path != best_model_path:
+                shutil.copy2(downloaded_path, best_model_path)
+                logging.info(f"Copied best model from {downloaded_path} to {best_model_path}")
+            else:
+                logging.info(f"Downloaded best model to {best_model_path}")
+        
+        # Verify the model file exists and has content
+        if not os.path.exists(best_model_path) or os.path.getsize(best_model_path) == 0:
+            logging.error(f"Best model file is missing or empty at {best_model_path}")
+            raise FileNotFoundError(f"Best model file not found: {best_model_path}")
+            
+        # Verify model architecture by loading it
+        try:
+            import torch
+            checkpoint = torch.load(best_model_path, map_location='cpu')
+            logging.info(f"Successfully verified model file integrity. Model contains {len(checkpoint)} keys.")
+        except Exception as e:
+            logging.error(f"Failed to load model for verification: {e}")
+            best_model = Model(model_id=best_model_id)
+            best_model_path = best_model.get_local_copy()
+            logging.warning(f"Re-downloaded model to {best_model_path} after verification failure")
+    except Exception as e:
+        logging.error(f"Failed to retrieve best model: {e}")
+        best_model_path = ""  # Empty string if model download fails
+
     # Step 5: Evaluate best model
     logging.info("Starting model evaluation...")
     test_accuracy = evaluate_model_github(
@@ -1523,8 +1728,10 @@ def guardian_github_pipeline():
     try:
         deployment_status = deploy_model_github(
             best_model_id=best_model_id,
+            best_model_path=best_model_path,
             test_accuracy=accuracy_value,
-            min_accuracy_threshold=85.0  # Deploy if accuracy >= 85%
+            min_accuracy_threshold=85.0,  # Deploy if accuracy >= 85%
+            mongo_uri=mongo_uri
         )
         logging.info(f"Deployment completed. Status: {deployment_status}")
     except Exception as e:
