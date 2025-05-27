@@ -112,20 +112,6 @@ jobs:
           echo "🔍 Checking MongoDB configuration..."
           if [ -n "$MONGODB_URI" ]; then
             echo "✅ MongoDB URI is configured"
-            python -c "
-            try:
-                from pymongo import MongoClient
-                import os
-                client = MongoClient(os.environ['MONGODB_URI'])
-                db = client.admin
-                server_info = db.command('serverStatus')
-                print(f'✅ MongoDB connection successful - connected to version {server_info.get(\"version\", \"unknown\")}')
-                print(f'✅ MongoDB server: {server_info.get(\"host\", \"unknown\")}')
-            except Exception as e:
-                print(f'❌ MongoDB connection failed: {e}')
-                # Don't fail the workflow, we'll continue without MongoDB
-                print('Will continue without MongoDB storage')
-            "
           else
             echo "⚠️ MongoDB URI not configured. Model will not be stored in MongoDB."
           fi
