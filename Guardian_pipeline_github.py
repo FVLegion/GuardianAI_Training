@@ -812,7 +812,7 @@ def bilstm_hyperparam_optimizer_github(
     dataset_path: str,
     input_size: int,
     num_classes: int,
-    total_max_trials: int = 15
+    total_max_trials: int = 90
 ):
     """
     Hyperparameter optimization for GitHub Actions with 30 trials.
