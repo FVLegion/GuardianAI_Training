@@ -1202,16 +1202,24 @@ def evaluate_model_github(
     else:
         print("⚠️  Could not infer architecture, using fallback methods...")
         
-        # Fallback 1: Try model design
-        model_design = best_model.get_model_design()
-        if model_design:
-            print(f"📋 Using model design: {model_design}")
-            hidden_size = int(model_design.get('hidden_size', 256))
-            num_layers = int(model_design.get('num_layers', 4))
-            dropout_rate = float(model_design.get('dropout_rate', 0.1))
-            use_layer_norm = bool(model_design.get('use_layer_norm', False))
-            attention_dropout = float(model_design.get('attention_dropout', 0.1))
-            batch_size = int(model_design.get('batch_size', 32))
+        # Fallback 1: Try model config
+        try:
+            # Try to get model configuration from the model object
+            model_config = model.config_dict if hasattr(model, 'config_dict') else {}
+            if not model_config and hasattr(model, 'get_model_config'):
+                model_config = model.get_model_config() or {}
+        except Exception as config_error:
+            print(f"⚠️ Could not retrieve model config: {config_error}")
+            model_config = {}
+            
+        if model_config:
+            print(f"📋 Using model config: {model_config}")
+            hidden_size = int(model_config.get('hidden_size', 256))
+            num_layers = int(model_config.get('num_layers', 4))
+            dropout_rate = float(model_config.get('dropout_rate', 0.1))
+            use_layer_norm = bool(model_config.get('use_layer_norm', False))
+            attention_dropout = float(model_config.get('attention_dropout', 0.1))
+            batch_size = int(model_config.get('batch_size', 32))
         else:
             print("📋 Using task parameters...")
             # Fallback 2: Task parameters
@@ -1459,7 +1467,7 @@ def deploy_model_github(
                         "model_id": best_model_id,
                         "test_accuracy": float(test_accuracy),
                         "training_task_id": str(best_task.id) if best_task else "unknown",
-                        "architecture": model.get_model_design() or {},
+                        "architecture": model.config_dict if hasattr(model, 'config_dict') else {},
                         "hyperparameters": hyperparams,
                         "checkpoint_keys": list(checkpoint.keys()) if checkpoint else [],
                         "input_size": hyperparams.get("General/input_size", {}).get("value", 34),
@@ -1526,7 +1534,7 @@ def deploy_model_github(
                             "weights_file_id": weights_file_id,
                             "hyperparameters": hyperparams,
                             "deployment_status": "deployed",
-                            "architecture": model.get_model_design() or {},
+                            "architecture": model.config_dict if hasattr(model, 'config_dict') else {},
                             "checkpoint_keys": list(checkpoint.keys()) if checkpoint else [],
                             "file_size_mb": os.path.getsize(model_path) / (1024 * 1024),
                             "status": "available",
