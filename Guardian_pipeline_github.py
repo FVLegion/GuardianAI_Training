@@ -1421,7 +1421,6 @@ def deploy_model_github(
                 model.update_design(config_dict={
                     "deployment_status": "deployed",
                     "test_accuracy": test_accuracy,
-                    "deployment_date": str(task.created),
                     "deployment_threshold": min_accuracy_threshold,
                     "deployed_by": "GitHub Actions",
                     "mongodb_stored": False  # Will update if MongoDB storage succeeds
@@ -1459,7 +1458,6 @@ def deploy_model_github(
                     model_metadata = {
                         "model_id": best_model_id,
                         "test_accuracy": float(test_accuracy),
-                        "deployment_date": str(task.created),
                         "training_task_id": str(best_task.id) if best_task else "unknown",
                         "architecture": model.get_model_design() or {},
                         "hyperparameters": hyperparams,
@@ -1527,7 +1525,6 @@ def deploy_model_github(
                             "test_accuracy": float(test_accuracy),
                             "weights_file_id": weights_file_id,
                             "hyperparameters": hyperparams,
-                            "deployment_date": str(task.created),
                             "deployment_status": "deployed",
                             "architecture": model.get_model_design() or {},
                             "checkpoint_keys": list(checkpoint.keys()) if checkpoint else [],
@@ -1657,14 +1654,14 @@ def guardian_github_pipeline():
         raise RuntimeError("Baseline training failed.")
     logging.info(f"Baseline training completed. Task ID: {base_task_id}, Model ID: {base_model_id}")
 
-    # Step 4: Hyperparameter optimization (30 trials)
+    # Step 4: Hyperparameter optimization (90 trials)
     logging.info("Starting hyperparameter optimization...")
     best_task_id, best_model_id = bilstm_hyperparam_optimizer_github(
         base_task_id=base_task_id,
         dataset_path=dataset_path,
         input_size=input_size,
         num_classes=num_classes,
-        total_max_trials=30
+        total_max_trials=90
     )
     logging.info(f"HPO completed. Best task ID: {best_task_id}, Best model ID: {best_model_id}")
 
