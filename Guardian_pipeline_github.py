@@ -1468,6 +1468,9 @@ def deploy_model_github(
             # If it's just a regular dict, try to extract the value
             elif len(param_value) == 1:
                 return list(param_value.values())[0]
+            # Empty dict should return default value
+            elif len(param_value) == 0:
+                return default_value
             else:
                 return param_value
         
@@ -2012,6 +2015,9 @@ def test_hyperparameter_processing():
             # If it's just a regular dict, try to extract the value
             elif len(param_value) == 1:
                 return list(param_value.values())[0]
+            # Empty dict should return default value
+            elif len(param_value) == 0:
+                return default_value
             else:
                 return param_value
         
