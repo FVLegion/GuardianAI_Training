@@ -10,6 +10,7 @@ import zipfile
 import json
 from datetime import datetime
 import ssl
+import glob
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
@@ -772,7 +773,9 @@ def train_bilstm_github(
     
     # Save hyperparameters as JSON file
     hyperparams_filename = f"hyperparams_{task.id}.json"
+    standard_hyperparams_filename = "train_hyperparams.json"
     hyperparams_filepath = os.path.join(os.getcwd(), hyperparams_filename)
+    standard_hyperparams_filepath = os.path.join(os.getcwd(), standard_hyperparams_filename)
     
     hyperparams_data = {
         "model_id": task.id,
@@ -808,9 +811,15 @@ def train_bilstm_github(
     }
     
     try:
+        # Save with task ID (for ClearML tracking)
         with open(hyperparams_filepath, 'w') as f:
             json.dump(hyperparams_data, f, indent=2)
         print(f"💾 Hyperparameters saved to {hyperparams_filepath}")
+        
+        # Also save with a standard name for easy reference
+        with open(standard_hyperparams_filepath, 'w') as f:
+            json.dump(hyperparams_data, f, indent=2)
+        print(f"💾 Hyperparameters also saved to {standard_hyperparams_filepath}")
         
         # Upload hyperparameters as artifact
         task.upload_artifact(
@@ -824,8 +833,20 @@ def train_bilstm_github(
         )
         print(f"📤 Hyperparameters uploaded as ClearML artifact")
         
+        # Clean up any other hyperparameter files (optional during training)
+        try:
+            import glob
+            for hp_file in glob.glob("hyperparams_*.json"):
+                # Skip the current hyperparams file
+                if hp_file == hyperparams_filename:
+                    continue
+                os.remove(hp_file)
+                print(f"🧹 Removed old hyperparameter file: {hp_file}")
+        except Exception as cleanup_error:
+            print(f"⚠️ Error during hyperparameter cleanup: {cleanup_error}")
+        
     except Exception as hyperparams_error:
-        print(f"⚠️  Error saving hyperparameters: {hyperparams_error}")
+        print(f"⚠️ Error saving hyperparameters: {hyperparams_error}")
     
     # Publish model
     output_model = OutputModel(task=task, name="BiLSTM_ActionRecognition", framework="PyTorch")
@@ -1020,6 +1041,23 @@ def bilstm_hyperparam_optimizer_github(
             }
         )
         print(f"📤 Best hyperparameters uploaded as ClearML artifact")
+        
+        # Clean up any other hyperparameter files to keep only the best one
+        try:
+            # Find and remove other hyperparameter files in the current directory
+            import glob
+            for hp_file in glob.glob("hyperparams_*.json"):
+                # Skip the best hyperparams file
+                if hp_file == best_hyperparams_filename:
+                    continue
+                try:
+                    os.remove(hp_file)
+                    print(f"🧹 Removed unnecessary hyperparameter file: {hp_file}")
+                except Exception as e:
+                    print(f"⚠️ Could not remove {hp_file}: {e}")
+        except Exception as cleanup_error:
+            print(f"⚠️ Error during hyperparameter cleanup: {cleanup_error}")
+            
     except Exception as hyperparams_error:
         print(f"⚠️ Error saving best hyperparameters: {hyperparams_error}")
     
@@ -2006,6 +2044,15 @@ def guardian_github_pipeline():
     accuracy_value = float(test_accuracy) if hasattr(test_accuracy, '__float__') else test_accuracy
     logging.info(f"Evaluation completed. Test accuracy: {accuracy_value:.2f}%")
 
+    # Clean up hyperparameter files before deployment - keep only the best model's hyperparameters
+    logging.info("Cleaning up hyperparameter files...")
+    try:
+        deleted_count = cleanup_hyperparameter_files(best_task_id)
+        logging.info(f"Removed {deleted_count} unnecessary hyperparameter files")
+    except Exception as cleanup_error:
+        logging.error(f"Error during hyperparameter cleanup: {cleanup_error}")
+        logging.info("Continuing with deployment despite cleanup error")
+
     # Step 6: Deploy model if it meets threshold
     logging.info("Starting model deployment...")
     try:
@@ -2092,6 +2139,66 @@ def test_hyperparameter_processing():
         print("⚠️  Some tests failed. Check the implementation.")
     
     return all_passed
+
+# ============================================================================
+# CLEAN UP UTILITY
+# ============================================================================
+
+def cleanup_hyperparameter_files(best_task_id):
+    """
+    Remove all hyperparameter files except the one corresponding to the best model.
+    This ensures the artifacts folder stays clean.
+    
+    Args:
+        best_task_id (str): The ID of the best task/model to keep
+    """
+    import os
+    import glob
+    
+    # Define patterns for hyperparam files
+    patterns = [
+        "hyperparams_*.json",
+        "best_hyperparams_*.json"
+    ]
+    
+    # The file we want to keep (based on best_task_id)
+    best_hyperparams_filename = f"best_hyperparams_{best_task_id}.json"
+    hyperparams_filename = f"hyperparams_{best_task_id}.json"
+    
+    # Rename the best hyperparams file to a standard name if it exists
+    if os.path.exists(best_hyperparams_filename):
+        try:
+            os.rename(best_hyperparams_filename, "best_hyperparams.json")
+            print(f"✅ Renamed {best_hyperparams_filename} to best_hyperparams.json")
+        except Exception as e:
+            print(f"⚠️ Could not rename {best_hyperparams_filename}: {e}")
+    
+    # Rename regular hyperparams file if it exists
+    if os.path.exists(hyperparams_filename):
+        try:
+            os.rename(hyperparams_filename, "model_hyperparams.json")
+            print(f"✅ Renamed {hyperparams_filename} to model_hyperparams.json")
+        except Exception as e:
+            print(f"⚠️ Could not rename {hyperparams_filename}: {e}")
+    
+    # Count deleted files
+    deleted_count = 0
+    
+    # Find and delete all other hyperparameter files
+    for pattern in patterns:
+        for file_path in glob.glob(pattern):
+            # Skip the files we want to keep
+            if file_path == best_hyperparams_filename or file_path == hyperparams_filename:
+                continue
+                
+            try:
+                os.remove(file_path)
+                deleted_count += 1
+            except Exception as e:
+                print(f"⚠️ Could not delete {file_path}: {e}")
+    
+    print(f"🧹 Cleanup completed: Removed {deleted_count} unnecessary hyperparameter files")
+    return deleted_count
 
 # ============================================================================
 # MAIN EXECUTION
