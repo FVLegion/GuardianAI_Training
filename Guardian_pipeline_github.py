@@ -699,7 +699,7 @@ def train_bilstm_github(
             correct_train += predicted.eq(y).sum().item()
 
         avg_train_loss = total_train_loss / len(train_loader)
-        train_acc = 100.0 * correct_train / total_train
+        train_acc = 100.0 * correct_train / total_train if total_train > 0 else 0.0
 
         # Validation phase
         model.eval()
@@ -769,6 +769,63 @@ def train_bilstm_github(
     logger.report_matplotlib_figure("Training Metrics", "GitHub", plt.gcf(), 0)
     plt.close()
     
+    # Save hyperparameters as JSON file
+    hyperparams_filename = f"hyperparams_{task.id}.json"
+    hyperparams_filepath = os.path.join(os.getcwd(), hyperparams_filename)
+    
+    hyperparams_data = {
+        "model_id": task.id,
+        "hyperparameters": {
+            "base_lr": base_lr,
+            "epochs": epochs,
+            "hidden_size": hidden_size,
+            "num_layers": num_layers,
+            "dropout_rate": dropout_rate,
+            "input_size": input_size,
+            "num_classes": num_classes,
+            "batch_size": batch_size,
+            "weight_decay": weight_decay,
+            "scheduler_patience": scheduler_patience,
+            "scheduler_factor": scheduler_factor,
+            "grad_clip_norm": grad_clip_norm,
+            "noise_factor": noise_factor,
+            "use_layer_norm": use_layer_norm,
+            "attention_dropout": attention_dropout
+        },
+        "training_results": {
+            "best_validation_accuracy": best_acc,
+            "training_epochs": epochs,
+            "final_train_losses": train_losses[-5:] if len(train_losses) >= 5 else train_losses,
+            "final_val_losses": val_losses[-5:] if len(val_losses) >= 5 else val_losses,
+            "final_val_accuracies": val_accuracies[-5:] if len(val_accuracies) >= 5 else val_accuracies
+        },
+        "model_info": {
+            "architecture": "BiLSTM with Enhanced Attention",
+            "framework": "PyTorch",
+            "model_type": "BiLSTM_ActionRecognition"
+        }
+    }
+    
+    try:
+        with open(hyperparams_filepath, 'w') as f:
+            json.dump(hyperparams_data, f, indent=2)
+        print(f"💾 Hyperparameters saved to {hyperparams_filepath}")
+        
+        # Upload hyperparameters as artifact
+        task.upload_artifact(
+            name="training_hyperparameters",
+            artifact_object=hyperparams_filepath,
+            metadata={
+                "description": "Complete training hyperparameters and results",
+                "best_accuracy": best_acc,
+                "epochs": epochs
+            }
+        )
+        print(f"📤 Hyperparameters uploaded as ClearML artifact")
+        
+    except Exception as hyperparams_error:
+        print(f"⚠️  Error saving hyperparameters: {hyperparams_error}")
+    
     # Publish model
     output_model = OutputModel(task=task, name="BiLSTM_ActionRecognition", framework="PyTorch")
     output_model.update_weights(weights_filename=best_model_path)
@@ -790,7 +847,8 @@ def train_bilstm_github(
         "attention_dropout": attention_dropout,
         "best_validation_accuracy": best_acc,
         "framework": "PyTorch",
-        "training_epochs": epochs
+        "training_epochs": epochs,
+        "hyperparams_saved": True
     })
     
     print(f"Model published with ID: {output_model.id}")
@@ -1394,6 +1452,70 @@ def deploy_model_github(
     
     logger = task.get_logger()
     
+    def safe_extract_hyperparameter_value(param_value, default_value):
+        """Safely extract hyperparameter value from various formats."""
+        if param_value is None:
+            return default_value
+        
+        # If it's already a basic type (int, float, bool, str), return it
+        if isinstance(param_value, (int, float, bool, str)):
+            return param_value
+        
+        # If it's a dict with 'value' key (ClearML format)
+        if isinstance(param_value, dict):
+            if 'value' in param_value:
+                return param_value['value']
+            # If it's just a regular dict, try to extract the value
+            elif len(param_value) == 1:
+                return list(param_value.values())[0]
+            else:
+                return param_value
+        
+        # If it's a list, take the first element
+        if isinstance(param_value, list) and len(param_value) > 0:
+            return param_value[0]
+        
+        # Default fallback
+        return default_value
+    
+    def process_hyperparameters(raw_hyperparams):
+        """Process hyperparameters from ClearML to a clean dictionary."""
+        processed = {}
+        
+        if not raw_hyperparams:
+            return processed
+        
+        # Define the expected hyperparameters with defaults
+        expected_params = {
+            'General/base_lr': 0.001,
+            'General/epochs': 50,
+            'General/hidden_size': 256,
+            'General/num_layers': 4,
+            'General/dropout_rate': 0.1,
+            'General/input_size': 34,
+            'General/num_classes': 3,
+            'General/batch_size': 32,
+            'General/weight_decay': 1e-5,
+            'General/scheduler_patience': 5,
+            'General/scheduler_factor': 0.5,
+            'General/grad_clip_norm': 1.0,
+            'General/noise_factor': 0.0,
+            'General/use_layer_norm': False,
+            'General/attention_dropout': 0.1
+        }
+        
+        # Process each expected parameter
+        for param_key, default_value in expected_params.items():
+            raw_value = raw_hyperparams.get(param_key, default_value)
+            processed[param_key] = safe_extract_hyperparameter_value(raw_value, default_value)
+        
+        # Also include any additional parameters that might be present
+        for key, value in raw_hyperparams.items():
+            if key not in processed:
+                processed[key] = safe_extract_hyperparameter_value(value, value)
+        
+        return processed
+    
     print(f"Deploying model {best_model_id} with test accuracy: {test_accuracy:.2f}%")
     
     if test_accuracy >= min_accuracy_threshold:
@@ -1417,13 +1539,84 @@ def deploy_model_github(
                 # Continue anyway - tags are not critical
             
             # Get the best task to retrieve hyperparameters
-            best_task = Task.get_task(task_id=model.task)
+            try:
+                best_task = Task.get_task(task_id=model.task)
+            except (AttributeError, Exception) as e:
+                print(f"⚠️  Could not access model.task attribute: {e}")
+                best_task = None
+                
             if not best_task:
                 print("⚠️  Could not retrieve task for model hyperparameters")
-                hyperparams = {}
+                raw_hyperparams = {}
             else:
-                hyperparams = best_task.get_parameters()
+                raw_hyperparams = best_task.get_parameters() or {}
                 print(f"📋 Retrieved hyperparameters from task {best_task.id}")
+            
+            # Process hyperparameters safely
+            hyperparams = process_hyperparameters(raw_hyperparams)
+            print(f"✅ Processed {len(hyperparams)} hyperparameters")
+            
+            # Create hyperparameters config file
+            config_filename = f"model_config_{best_model_id[:8]}.json"
+            config_filepath = os.path.join(os.getcwd(), config_filename)
+            
+            # Prepare comprehensive model configuration
+            model_config = {
+                "model_metadata": {
+                    "model_id": best_model_id,
+                    "test_accuracy": float(test_accuracy),
+                    "training_task_id": str(best_task.id) if best_task else "unknown",
+                    "framework": "PyTorch",
+                    "model_type": "BiLSTM_ActionRecognition",
+                    "architecture": "BiLSTM with Enhanced Attention",
+                    "description": "Guardian AI Action Recognition Model",
+                    "deployment_threshold": min_accuracy_threshold,
+                    "deployed_by": "GitHub Actions",
+                    "deployment_date": str(datetime.now())
+                },
+                "hyperparameters": hyperparams,
+                "model_architecture": {
+                    "input_size": safe_extract_hyperparameter_value(hyperparams.get("General/input_size"), 34),
+                    "hidden_size": safe_extract_hyperparameter_value(hyperparams.get("General/hidden_size"), 256),
+                    "num_layers": safe_extract_hyperparameter_value(hyperparams.get("General/num_layers"), 4),
+                    "num_classes": safe_extract_hyperparameter_value(hyperparams.get("General/num_classes"), 3),
+                    "dropout_rate": safe_extract_hyperparameter_value(hyperparams.get("General/dropout_rate"), 0.1),
+                    "use_layer_norm": safe_extract_hyperparameter_value(hyperparams.get("General/use_layer_norm"), False),
+                    "attention_dropout": safe_extract_hyperparameter_value(hyperparams.get("General/attention_dropout"), 0.1)
+                },
+                "training_config": {
+                    "base_lr": safe_extract_hyperparameter_value(hyperparams.get("General/base_lr"), 0.001),
+                    "epochs": safe_extract_hyperparameter_value(hyperparams.get("General/epochs"), 50),
+                    "batch_size": safe_extract_hyperparameter_value(hyperparams.get("General/batch_size"), 32),
+                    "weight_decay": safe_extract_hyperparameter_value(hyperparams.get("General/weight_decay"), 1e-5),
+                    "scheduler_patience": safe_extract_hyperparameter_value(hyperparams.get("General/scheduler_patience"), 5),
+                    "scheduler_factor": safe_extract_hyperparameter_value(hyperparams.get("General/scheduler_factor"), 0.5),
+                    "grad_clip_norm": safe_extract_hyperparameter_value(hyperparams.get("General/grad_clip_norm"), 1.0),
+                    "noise_factor": safe_extract_hyperparameter_value(hyperparams.get("General/noise_factor"), 0.0)
+                }
+            }
+            
+            # Save configuration as JSON file
+            try:
+                with open(config_filepath, 'w') as config_file:
+                    json.dump(model_config, config_file, indent=2, default=str)
+                print(f"💾 Model configuration saved to {config_filepath}")
+                
+                # Upload configuration as artifact to ClearML task
+                task.upload_artifact(
+                    name="model_configuration",
+                    artifact_object=config_filepath,
+                    metadata={
+                        "description": "Complete model configuration including hyperparameters",
+                        "model_id": best_model_id,
+                        "accuracy": test_accuracy
+                    }
+                )
+                print(f"📤 Configuration uploaded as ClearML artifact")
+                
+            except Exception as config_error:
+                print(f"⚠️  Error saving model configuration: {config_error}")
+                config_filepath = None
             
             # Update model metadata
             try:
@@ -1432,7 +1625,8 @@ def deploy_model_github(
                     "test_accuracy": test_accuracy,
                     "deployment_threshold": min_accuracy_threshold,
                     "deployed_by": "GitHub Actions",
-                    "mongodb_stored": False  # Will update if MongoDB storage succeeds
+                    "mongodb_stored": False,  # Will update if MongoDB storage succeeds
+                    "config_saved": config_filepath is not None
                 })
                 print(f"📋 Updated model metadata")
             except Exception as metadata_error:
@@ -1463,18 +1657,18 @@ def deploy_model_github(
                     # Create model name with timestamp and accuracy
                     model_name = f"guardian_model_{best_model_id[:8]}_{int(test_accuracy)}"
                     
-                    # Prepare model metadata for distribution
+                    # Prepare model metadata for distribution (using processed hyperparams)
                     model_metadata = {
                         "model_id": best_model_id,
                         "test_accuracy": float(test_accuracy),
                         "training_task_id": str(best_task.id) if best_task else "unknown",
                         "architecture": model.config_dict if hasattr(model, 'config_dict') else {},
-                        "hyperparameters": hyperparams,
+                        "hyperparameters": hyperparams,  # Use processed hyperparams
                         "checkpoint_keys": list(checkpoint.keys()) if checkpoint else [],
-                        "input_size": hyperparams.get("General/input_size", {}).get("value", 34),
-                        "hidden_size": hyperparams.get("General/hidden_size", {}).get("value", 256),
-                        "num_layers": hyperparams.get("General/num_layers", {}).get("value", 4),
-                        "num_classes": hyperparams.get("General/num_classes", {}).get("value", 3),
+                        "input_size": safe_extract_hyperparameter_value(hyperparams.get("General/input_size"), 34),
+                        "hidden_size": safe_extract_hyperparameter_value(hyperparams.get("General/hidden_size"), 256),
+                        "num_layers": safe_extract_hyperparameter_value(hyperparams.get("General/num_layers"), 4),
+                        "num_classes": safe_extract_hyperparameter_value(hyperparams.get("General/num_classes"), 3),
                         "framework": "PyTorch",
                         "model_type": "BiLSTM_ActionRecognition",
                         "description": "Guardian AI Action Recognition Model"
@@ -1499,6 +1693,24 @@ def deploy_model_github(
                                 print(f"   Document ID: {result['document_id']}")
                                 print(f"   Download Command: {result['download_command']}")
                                 
+                                # Also upload the config file if it exists
+                                if config_filepath and os.path.exists(config_filepath):
+                                    try:
+                                        config_result = distributor.upload_model(
+                                            model_path=config_filepath,
+                                            model_metadata={
+                                                **model_metadata,
+                                                "file_type": "configuration",
+                                                "description": "Model configuration and hyperparameters"
+                                            },
+                                            model_name=f"{model_name}_config"
+                                        )
+                                        if config_result:
+                                            print(f"🗃️ Configuration uploaded:")
+                                            print(f"   Config Name: {config_result['model_name']}")
+                                    except Exception as config_upload_error:
+                                        print(f"⚠️  Could not upload config to distribution: {config_upload_error}")
+                                
                                 # Update model metadata to reflect MongoDB storage
                                 model.update_design(config_dict={"mongodb_stored": True})
                             else:
@@ -1517,51 +1729,50 @@ def deploy_model_github(
                         
                         # Store the model weights
                         with open(model_path, 'rb') as f:
-                            # Get task creation date safely
-                            try:
-                                # Try to get task creation date, fallback to current time
-                                creation_date = getattr(task, 'created', None)
-                                if creation_date:
-                                    deployment_date = str(creation_date)
-                                else:
-                                    deployment_date = str(datetime.now())
-                            except Exception:
-                                deployment_date = str(datetime.now())
-                            
                             weights_file_id = fs.put(
                                 f, 
                                 filename=f"{model_name}.pth",
                                 metadata={
                                     "model_id": best_model_id,
                                     "accuracy": float(test_accuracy),
-                                    "deployment_date": deployment_date
+                                    "deployment_date": str(datetime.now()),
+                                    "file_type": "model_weights"
                                 }
                             )
                         
-                        # Prepare model metadata and hyperparameters
-                        # Get task creation date safely for metadata
-                        try:
-                            creation_date = getattr(task, 'created', None)
-                            if creation_date:
-                                uploaded_at = str(creation_date)
-                            else:
-                                uploaded_at = str(datetime.now())
-                        except Exception:
-                            uploaded_at = str(datetime.now())
+                        # Store the configuration file if it exists
+                        config_file_id = None
+                        if config_filepath and os.path.exists(config_filepath):
+                            try:
+                                with open(config_filepath, 'rb') as f:
+                                    config_file_id = fs.put(
+                                        f,
+                                        filename=f"{model_name}_config.json",
+                                        metadata={
+                                            "model_id": best_model_id,
+                                            "accuracy": float(test_accuracy),
+                                            "deployment_date": str(datetime.now()),
+                                            "file_type": "configuration"
+                                        }
+                                    )
+                                print(f"📁 Configuration file stored in MongoDB")
+                            except Exception as config_store_error:
+                                print(f"⚠️  Error storing config file: {config_store_error}")
                         
                         model_info = {
                             "model_name": model_name,
                             "model_id": best_model_id,
                             "test_accuracy": float(test_accuracy),
                             "weights_file_id": weights_file_id,
-                            "hyperparameters": hyperparams,
+                            "config_file_id": config_file_id,
+                            "hyperparameters": hyperparams,  # Use processed hyperparams
                             "deployment_status": "deployed",
                             "architecture": model.config_dict if hasattr(model, 'config_dict') else {},
                             "checkpoint_keys": list(checkpoint.keys()) if checkpoint else [],
                             "file_size_mb": os.path.getsize(model_path) / (1024 * 1024),
                             "status": "available",
                             "download_count": 0,
-                            "uploaded_at": uploaded_at,
+                            "uploaded_at": str(datetime.now()),
                             "file_id": weights_file_id
                         }
                         
@@ -1571,6 +1782,8 @@ def deploy_model_github(
                         print(f"🗃️ Model weights and metadata saved to MongoDB")
                         print(f"   Model Name: {model_name}")
                         print(f"   File Size: {model_info['file_size_mb']:.2f} MB")
+                        if config_file_id:
+                            print(f"   Config File: Stored with ID {config_file_id}")
                         
                         # Update model metadata to reflect MongoDB storage
                         model.update_design(config_dict={"mongodb_stored": True})
@@ -1578,6 +1791,8 @@ def deploy_model_github(
                 except Exception as mongo_error:
                     print(f"❌ MongoDB storage error: {mongo_error}")
                     logger.report_text(f"MongoDB storage failed: {mongo_error}")
+                    import traceback
+                    print(f"Full traceback: {traceback.format_exc()}")
             else:
                 print("ℹ️ MongoDB URI not provided, skipping database storage")
             
@@ -1588,6 +1803,8 @@ def deploy_model_github(
             print(f"📊 Test Accuracy: {test_accuracy:.2f}%")
             print(f"🎯 Threshold: {min_accuracy_threshold}%")
             print(f"🏷️  Model ID: {best_model_id}")
+            if config_filepath:
+                print(f"📄 Config saved: {config_filename}")
             
             return "deployed"
             
@@ -1596,6 +1813,8 @@ def deploy_model_github(
             logger.report_scalar("Deployment", "Status", 0, 0)  # 0 = failed
             logger.report_scalar("Deployment", "Test_Accuracy", test_accuracy, 0)
             print(f"⚠️  Model met accuracy threshold but deployment failed")
+            import traceback
+            print(f"Full traceback: {traceback.format_exc()}")
             return "deployment_failed"
     else:
         logger.report_scalar("Deployment", "Status", 0, 0)  # 0 = not deployed
@@ -1691,7 +1910,7 @@ def guardian_github_pipeline():
         dataset_path=dataset_path,
         input_size=input_size,
         num_classes=num_classes,
-        total_max_trials=90
+        total_max_trials=30
     )
     logging.info(f"HPO completed. Best task ID: {best_task_id}, Best model ID: {best_model_id}")
 
@@ -1769,11 +1988,83 @@ def guardian_github_pipeline():
     return accuracy_value, deployment_status
 
 # ============================================================================
+# TEST FUNCTION FOR HYPERPARAMETER PROCESSING
+# ============================================================================
+
+def test_hyperparameter_processing():
+    """Test the hyperparameter processing functions to ensure they handle various formats correctly."""
+    print("🧪 Testing hyperparameter processing...")
+    
+    # Create test functions (copying from deploy function)
+    def safe_extract_hyperparameter_value(param_value, default_value):
+        """Safely extract hyperparameter value from various formats."""
+        if param_value is None:
+            return default_value
+        
+        # If it's already a basic type (int, float, bool, str), return it
+        if isinstance(param_value, (int, float, bool, str)):
+            return param_value
+        
+        # If it's a dict with 'value' key (ClearML format)
+        if isinstance(param_value, dict):
+            if 'value' in param_value:
+                return param_value['value']
+            # If it's just a regular dict, try to extract the value
+            elif len(param_value) == 1:
+                return list(param_value.values())[0]
+            else:
+                return param_value
+        
+        # If it's a list, take the first element
+        if isinstance(param_value, list) and len(param_value) > 0:
+            return param_value[0]
+        
+        # Default fallback
+        return default_value
+    
+    # Test various input formats
+    test_cases = [
+        # (input, expected_output, description)
+        (256, 256, "Direct integer"),
+        ("test_string", "test_string", "Direct string"),
+        (True, True, "Direct boolean"),
+        (0.001, 0.001, "Direct float"),
+        ({"value": 128}, 128, "ClearML dict format"),
+        ({"some_key": 512}, 512, "Single-key dict"),
+        ([256], 256, "List with single element"),
+        (None, 999, "None value with default"),
+        ({}, 999, "Empty dict with default"),
+        ([], 999, "Empty list with default"),
+    ]
+    
+    all_passed = True
+    for input_val, expected, description in test_cases:
+        result = safe_extract_hyperparameter_value(input_val, 999)
+        if result != expected:
+            print(f"❌ FAILED: {description} - Expected {expected}, got {result}")
+            all_passed = False
+        else:
+            print(f"✅ PASSED: {description}")
+    
+    if all_passed:
+        print("🎉 All hyperparameter processing tests passed!")
+    else:
+        print("⚠️  Some tests failed. Check the implementation.")
+    
+    return all_passed
+
+# ============================================================================
 # MAIN EXECUTION
 # ============================================================================
 
 if __name__ == '__main__':
     logging.info("Running Guardian 🦾 pipeline for GitHub Actions...")
+    
+    # Test hyperparameter processing before starting
+    test_passed = test_hyperparameter_processing()
+    if not test_passed:
+        logging.error("Hyperparameter processing tests failed! Exiting.")
+        sys.exit(1)
     
     # Run locally for GitHub Actions
     PipelineDecorator.run_locally()
