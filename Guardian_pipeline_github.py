@@ -9,6 +9,7 @@ import urllib.request
 import zipfile
 import json
 from datetime import datetime
+import ssl
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
@@ -879,6 +880,8 @@ def bilstm_hyperparam_optimizer_github(
     from clearml.automation import HyperParameterOptimizer, RandomSearch
     from clearml.automation import DiscreteParameterRange, UniformParameterRange
     from clearml import Task, Model
+    import json
+    import os
     
     print(f"Starting hyperparameter optimization with {total_max_trials} trials...")
     
@@ -994,6 +997,31 @@ def bilstm_hyperparam_optimizer_github(
     
     # Get the best model
     best_exp_task = Task.get_task(task_id=best_exp_id)
+    
+    # Save best model hyperparameters as JSON file
+    best_hyperparams = best_exp_task.get_parameters()
+    
+    # Create a JSON file with these hyperparameters
+    best_hyperparams_filename = f"best_hyperparams_{best_exp_id}.json"
+    best_hyperparams_filepath = os.path.join(os.getcwd(), best_hyperparams_filename)
+    
+    try:
+        with open(best_hyperparams_filepath, 'w') as f:
+            json.dump(best_hyperparams, f, indent=2, default=str)
+        print(f"💾 Best model hyperparameters saved to {best_hyperparams_filepath}")
+        
+        # Upload hyperparameters as artifact to the HPO task
+        hpo_task.upload_artifact(
+            name="best_model_hyperparameters",
+            artifact_object=best_hyperparams_filepath,
+            metadata={
+                "description": "Hyperparameters of the best model from HPO",
+                "best_experiment_id": best_exp_id,
+            }
+        )
+        print(f"📤 Best hyperparameters uploaded as ClearML artifact")
+    except Exception as hyperparams_error:
+        print(f"⚠️ Error saving best hyperparameters: {hyperparams_error}")
     
     if (best_exp_task.models and 
         'output' in best_exp_task.models and 
@@ -1725,8 +1753,14 @@ def deploy_model_github(
                         from pymongo import MongoClient
                         import gridfs
                         
-                        # Connect to MongoDB
-                        client = MongoClient(mongo_uri)
+                        # Connect to MongoDB with SSL options to fix TLSv1 alert issues
+                        client = MongoClient(
+                            mongo_uri,
+                            ssl=True,
+                            ssl_cert_reqs=ssl.CERT_NONE,  # Skip certificate validation
+                            tlsAllowInvalidCertificates=True,  # Allow invalid certificates
+                            tlsInsecure=True  # Skip hostname validation
+                        )
                         db = client.guardian_models
                         fs = gridfs.GridFS(db)
                         
