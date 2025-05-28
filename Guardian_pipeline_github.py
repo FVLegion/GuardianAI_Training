@@ -8,6 +8,7 @@ import time
 import urllib.request
 import zipfile
 import json
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
@@ -1516,17 +1517,38 @@ def deploy_model_github(
                         
                         # Store the model weights
                         with open(model_path, 'rb') as f:
+                            # Get task creation date safely
+                            try:
+                                # Try to get task creation date, fallback to current time
+                                creation_date = getattr(task, 'created', None)
+                                if creation_date:
+                                    deployment_date = str(creation_date)
+                                else:
+                                    deployment_date = str(datetime.now())
+                            except Exception:
+                                deployment_date = str(datetime.now())
+                            
                             weights_file_id = fs.put(
                                 f, 
                                 filename=f"{model_name}.pth",
                                 metadata={
                                     "model_id": best_model_id,
                                     "accuracy": float(test_accuracy),
-                                    "deployment_date": str(task.created)
+                                    "deployment_date": deployment_date
                                 }
                             )
                         
                         # Prepare model metadata and hyperparameters
+                        # Get task creation date safely for metadata
+                        try:
+                            creation_date = getattr(task, 'created', None)
+                            if creation_date:
+                                uploaded_at = str(creation_date)
+                            else:
+                                uploaded_at = str(datetime.now())
+                        except Exception:
+                            uploaded_at = str(datetime.now())
+                        
                         model_info = {
                             "model_name": model_name,
                             "model_id": best_model_id,
@@ -1539,7 +1561,7 @@ def deploy_model_github(
                             "file_size_mb": os.path.getsize(model_path) / (1024 * 1024),
                             "status": "available",
                             "download_count": 0,
-                            "uploaded_at": str(task.created),
+                            "uploaded_at": uploaded_at,
                             "file_id": weights_file_id
                         }
                         
