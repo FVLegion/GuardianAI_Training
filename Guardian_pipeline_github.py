@@ -1985,7 +1985,7 @@ def guardian_github_pipeline():
         dataset_path=dataset_path,
         input_size=input_size,
         num_classes=num_classes,
-        total_max_trials=30
+        total_max_trials=100
     )
     logging.info(f"HPO completed. Best task ID: {best_task_id}, Best model ID: {best_model_id}")
 
