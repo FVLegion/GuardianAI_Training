@@ -1019,49 +1019,170 @@ def bilstm_hyperparam_optimizer_github(
     # Get the best model
     best_exp_task = Task.get_task(task_id=best_exp_id)
     
-    # Save best model hyperparameters as JSON file
-    best_hyperparams = best_exp_task.get_parameters()
-    
-    # Create a JSON file with these hyperparameters
-    best_hyperparams_filename = f"best_hyperparams_{best_exp_id}.json"
-    best_hyperparams_filepath = os.path.join(os.getcwd(), best_hyperparams_filename)
-    
-    try:
-        with open(best_hyperparams_filepath, 'w') as f:
-            json.dump(best_hyperparams, f, indent=2, default=str)
-        print(f"💾 Best model hyperparameters saved to {best_hyperparams_filepath}")
-        
-        # Upload hyperparameters as artifact to the HPO task
-        hpo_task.upload_artifact(
-            name="best_model_hyperparameters",
-            artifact_object=best_hyperparams_filepath,
-            metadata={
-                "description": "Hyperparameters of the best model from HPO",
-                "best_experiment_id": best_exp_id,
-            }
-        )
-        print(f"📤 Best hyperparameters uploaded as ClearML artifact")
-        
-        # Clean up any other hyperparameter files to keep only the best one
-        try:
-            # Find and remove other hyperparameter files in the current directory
-            import glob
-            for hp_file in glob.glob("hyperparams_*.json"):
-                # Skip the best hyperparams file
-                if hp_file == best_hyperparams_filename:
-                    continue
-                try:
-                    os.remove(hp_file)
-                    print(f"🧹 Removed unnecessary hyperparameter file: {hp_file}")
-                except Exception as e:
-                    print(f"⚠️ Could not remove {hp_file}: {e}")
-        except Exception as cleanup_error:
-            print(f"⚠️ Error during hyperparameter cleanup: {cleanup_error}")
-            
-    except Exception as hyperparams_error:
-        print(f"⚠️ Error saving best hyperparameters: {hyperparams_error}")
-    
+    # Get the actual model from the task
+    model_id = None
     if (best_exp_task.models and 
+        'output' in best_exp_task.models and 
+        len(best_exp_task.models['output']) > 0):
+        model = best_exp_task.models['output'][0]
+        model_id = model.id
+        print(f"Found best model ID: {model_id}")
+        
+        # Extract architecture from the actual model weights
+        try:
+            import torch
+            import os
+            
+            # Download the model weights
+            model_path = model.get_local_copy()
+            checkpoint = torch.load(model_path, map_location='cpu')
+            
+            # Extract architecture parameters directly from the checkpoint tensors
+            lstm_hidden_size = checkpoint['lstm.weight_ih_l0'].shape[0] // 4
+            num_lstm_layers = 0
+            while f'lstm.weight_ih_l{num_lstm_layers}' in checkpoint:
+                num_lstm_layers += 1
+            
+            use_layer_norm = 'layer_norm.weight' in checkpoint
+            
+            print(f"📐 Extracted architecture from best model weights:")
+            print(f"   - hidden_size: {lstm_hidden_size}")
+            print(f"   - num_layers: {num_lstm_layers}")
+            print(f"   - use_layer_norm: {use_layer_norm}")
+            
+            # Save best model hyperparameters as JSON file with actual architecture
+            best_hyperparams = best_exp_task.get_parameters()
+            
+            # Create a clean version of the hyperparameters with the actual architecture
+            architecture_aligned_hyperparams = {}
+            
+            # First add the General/ hyperparameters with default values
+            default_hyperparams = {
+                'General/base_lr': 0.001,
+                'General/epochs': 50,
+                'General/hidden_size': lstm_hidden_size,  # Use actual architecture 
+                'General/num_layers': num_lstm_layers,    # Use actual architecture
+                'General/dropout_rate': 0.1,
+                'General/input_size': 34,
+                'General/num_classes': 3,
+                'General/batch_size': 32,
+                'General/weight_decay': 1e-5,
+                'General/scheduler_patience': 5,
+                'General/scheduler_factor': 0.5,
+                'General/grad_clip_norm': 1.0,
+                'General/noise_factor': 0.0,
+                'General/use_layer_norm': use_layer_norm,  # Use actual architecture
+                'General/attention_dropout': 0.1
+            }
+            
+            # Add defaults first
+            for key, default_value in default_hyperparams.items():
+                architecture_aligned_hyperparams[key] = default_value
+                
+            # Override with actual hyperparameters from the best experiment (except architecture)
+            for key, value in best_hyperparams.items():
+                if key.startswith('General/'):
+                    # Skip architecture parameters that we've extracted from weights
+                    if key in ['General/hidden_size', 'General/num_layers', 'General/use_layer_norm']:
+                        continue
+                    try:
+                        if isinstance(value, dict) and 'value' in value:
+                            architecture_aligned_hyperparams[key] = value['value']
+                        else:
+                            architecture_aligned_hyperparams[key] = value
+                    except Exception as e:
+                        print(f"⚠️ Error processing parameter {key}: {e}")
+            
+            # Create files with aligned hyperparameters
+            best_hyperparams_filename = "best_hyperparams.json"
+            best_hyperparams_filepath = os.path.join(os.getcwd(), best_hyperparams_filename)
+            
+            with open(best_hyperparams_filepath, 'w') as f:
+                json.dump(architecture_aligned_hyperparams, f, indent=2, default=str)
+            print(f"💾 Architecture-aligned hyperparameters saved to {best_hyperparams_filepath}")
+            
+            # Upload as artifact
+            hpo_task.upload_artifact(
+                name="architecture_aligned_hyperparameters",
+                artifact_object=best_hyperparams_filepath,
+                metadata={
+                    "description": "Hyperparameters aligned with actual model architecture",
+                    "best_experiment_id": best_exp_id,
+                    "model_id": model_id,
+                    "hidden_size": lstm_hidden_size,
+                    "num_layers": num_lstm_layers,
+                    "use_layer_norm": use_layer_norm
+                }
+            )
+            print(f"📤 Architecture-aligned hyperparameters uploaded as ClearML artifact")
+            
+        except Exception as arch_error:
+            print(f"⚠️ Could not extract architecture from model weights: {arch_error}")
+            # Fall back to saving original hyperparameters
+            best_hyperparams_filename = f"best_hyperparams_{best_exp_id}.json"
+            best_hyperparams_filepath = os.path.join(os.getcwd(), best_hyperparams_filename)
+            
+            try:
+                with open(best_hyperparams_filepath, 'w') as f:
+                    json.dump(best_hyperparams, f, indent=2, default=str)
+                print(f"💾 Best model hyperparameters saved to {best_hyperparams_filepath}")
+                
+                # Upload hyperparameters as artifact to the HPO task
+                hpo_task.upload_artifact(
+                    name="best_model_hyperparameters",
+                    artifact_object=best_hyperparams_filepath,
+                    metadata={
+                        "description": "Hyperparameters of the best model from HPO",
+                        "best_experiment_id": best_exp_id,
+                    }
+                )
+                print(f"📤 Best hyperparameters uploaded as ClearML artifact")
+            except Exception as hyperparams_error:
+                print(f"⚠️ Error saving best hyperparameters: {hyperparams_error}")
+    else:
+        # No model found, fall back to original hyperparameters
+        best_hyperparams_filename = f"best_hyperparams_{best_exp_id}.json"
+        best_hyperparams_filepath = os.path.join(os.getcwd(), best_hyperparams_filename)
+        
+        try:
+            with open(best_hyperparams_filepath, 'w') as f:
+                json.dump(best_hyperparams, f, indent=2, default=str)
+            print(f"💾 Best model hyperparameters saved to {best_hyperparams_filepath}")
+            
+            # Upload hyperparameters as artifact to the HPO task
+            hpo_task.upload_artifact(
+                name="best_model_hyperparameters",
+                artifact_object=best_hyperparams_filepath,
+                metadata={
+                    "description": "Hyperparameters of the best model from HPO",
+                    "best_experiment_id": best_exp_id,
+                }
+            )
+            print(f"📤 Best hyperparameters uploaded as ClearML artifact")
+            
+            # Clean up any other hyperparameter files to keep only the best one
+            try:
+                # Find and remove other hyperparameter files in the current directory
+                import glob
+                for hp_file in glob.glob("hyperparams_*.json"):
+                    # Skip the best hyperparams file
+                    if hp_file == best_hyperparams_filename:
+                        continue
+                    try:
+                        os.remove(hp_file)
+                        print(f"🧹 Removed unnecessary hyperparameter file: {hp_file}")
+                    except Exception as e:
+                        print(f"⚠️ Could not remove {hp_file}: {e}")
+            except Exception as cleanup_error:
+                print(f"⚠️ Error during hyperparameter cleanup: {cleanup_error}")
+                
+        except Exception as hyperparams_error:
+            print(f"⚠️ Error saving best hyperparameters: {hyperparams_error}")
+    
+    # Return best experiment and model ids
+    if model_id:
+        return best_exp_id, model_id
+    elif (best_exp_task.models and 
         'output' in best_exp_task.models and 
         len(best_exp_task.models['output']) > 0):
         model = best_exp_task.models['output'][0]
@@ -1295,6 +1416,20 @@ def evaluate_model_github(
             # Dropout rate is hard to infer from weights, use default
             config['dropout_rate'] = 0.1  # Default, hard to infer from weights
             
+            # Print all checkpoint keys for better debugging
+            print(f"📋 Checkpoint keys: {sorted(list(checkpoint.keys()))}")
+            
+            # Print key tensor shapes for debugging
+            print(f"📏 Key tensor shapes:")
+            print(f"   - lstm.weight_ih_l0: {checkpoint['lstm.weight_ih_l0'].shape}")
+            print(f"   - lstm.weight_hh_l0: {checkpoint['lstm.weight_hh_l0'].shape}")
+            if 'fc.weight' in checkpoint:
+                print(f"   - fc.weight: {checkpoint['fc.weight'].shape}")
+            if 'attention.attention_weights.weight' in checkpoint:
+                print(f"   - attention.attention_weights.weight: {checkpoint['attention.attention_weights.weight'].shape}")
+            if 'layer_norm.weight' in checkpoint:
+                print(f"   - layer_norm.weight: {checkpoint['layer_norm.weight'].shape}")
+            
             print(f"✅ Inferred architecture:")
             print(f"   - hidden_size: {config['hidden_size']}")
             print(f"   - num_layers: {config['num_layers']}")
@@ -1308,6 +1443,7 @@ def evaluate_model_github(
             
         except Exception as e:
             print(f"❌ Error inferring architecture: {e}")
+            print(f"Available checkpoint keys: {sorted(list(checkpoint.keys())) if checkpoint else 'No keys'}")
             return None
     
     # Try to infer architecture from checkpoint
@@ -1418,7 +1554,55 @@ def evaluate_model_github(
         print(f"❌ Error loading model weights: {e}")
         print(f"Model architecture: {model}")
         print(f"Checkpoint keys: {list(checkpoint.keys())}")
-        raise
+        
+        print(f"⚠️ Architecture mismatch detected. Attempting fallback approaches...")
+        
+        # Fallback 1: Try with strict=False to skip missing keys
+        try:
+            print(f"Trying load_state_dict with strict=False")
+            model.load_state_dict(checkpoint, strict=False)
+            print(f"✓ Model loaded with strict=False (some parameters may not be loaded correctly)")
+        except Exception as strict_false_error:
+            print(f"❌ Failed to load with strict=False: {strict_false_error}")
+            
+            # Fallback 2: Create a new model with exactly the architecture detected from the checkpoint
+            print(f"Creating new model with architecture exactly matching checkpoint...")
+            
+            # Extract architecture directly from checkpoint tensors
+            try:
+                lstm_hidden_size = checkpoint['lstm.weight_ih_l0'].shape[0] // 4
+                num_lstm_layers = 0
+                while f'lstm.weight_ih_l{num_lstm_layers}' in checkpoint:
+                    num_lstm_layers += 1
+                
+                use_layer_norm = 'layer_norm.weight' in checkpoint
+                checkpoint_input_size = checkpoint['lstm.weight_ih_l0'].shape[1]
+                checkpoint_num_classes = checkpoint['fc.weight'].shape[0]
+                
+                print(f"Exact checkpoint architecture:")
+                print(f" - hidden_size: {lstm_hidden_size}")
+                print(f" - num_layers: {num_lstm_layers}")
+                print(f" - use_layer_norm: {use_layer_norm}")
+                print(f" - input_size: {checkpoint_input_size}")
+                print(f" - num_classes: {checkpoint_num_classes}")
+                
+                # Create model with exact checkpoint architecture
+                model = ActionRecognitionBiLSTMWithAttention(
+                    input_size=checkpoint_input_size,
+                    hidden_size=lstm_hidden_size,
+                    num_layers=num_lstm_layers,
+                    num_classes=checkpoint_num_classes,
+                    dropout_rate=0.1,  # Use default as we can't infer from weights
+                    use_layer_norm=use_layer_norm,
+                    attention_dropout=0.1  # Use default as we can't infer from weights
+                ).to(device)
+                
+                # Try loading again with the exact architecture
+                model.load_state_dict(checkpoint)
+                print(f"✅ Success! Model loaded with exact checkpoint architecture")
+            except Exception as exact_arch_error:
+                print(f"❌ Failed even with exact architecture: {exact_arch_error}")
+                raise RuntimeError("Could not load model weights with any approach")
     
     model.eval()
     
@@ -2161,17 +2345,19 @@ def cleanup_hyperparameter_files(best_task_id):
         "best_hyperparams_*.json"
     ]
     
-    # The file we want to keep (based on best_task_id)
+    # The files we want to keep
     best_hyperparams_filename = f"best_hyperparams_{best_task_id}.json"
     hyperparams_filename = f"hyperparams_{best_task_id}.json"
+    standard_best_filename = "best_hyperparams.json"  # Always keep this one
     
     # Rename the best hyperparams file to a standard name if it exists
-    if os.path.exists(best_hyperparams_filename):
+    if os.path.exists(best_hyperparams_filename) and not os.path.exists(standard_best_filename):
         try:
-            os.rename(best_hyperparams_filename, "best_hyperparams.json")
-            print(f"✅ Renamed {best_hyperparams_filename} to best_hyperparams.json")
+            import shutil
+            shutil.copy2(best_hyperparams_filename, standard_best_filename)
+            print(f"✅ Copied {best_hyperparams_filename} to {standard_best_filename}")
         except Exception as e:
-            print(f"⚠️ Could not rename {best_hyperparams_filename}: {e}")
+            print(f"⚠️ Could not copy {best_hyperparams_filename} to {standard_best_filename}: {e}")
     
     # Rename regular hyperparams file if it exists
     if os.path.exists(hyperparams_filename):
