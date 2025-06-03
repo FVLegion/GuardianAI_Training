@@ -37,6 +37,7 @@ from typing import Dict, Any, Optional, List, BinaryIO, Union
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError, OperationFailure
+import certifi # Added import for certifi
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -120,11 +121,15 @@ class GuardianModelDistribution:
             uri (str, optional): MongoDB connection URI. Defaults to environment variable.
             database (str, optional): MongoDB database name. Defaults to environment variable or "guardian_ai".
         """
-        # Get connection info - first try parameters, then environment vars/secrets
-        connection_info = get_mongodb_connection_info()
-        
-        self.uri = uri or connection_info['uri']
-        self.database_name = database or connection_info['database']
+        if uri and database:
+            self.uri = uri
+            self.database_name = database
+            logger.info(f"GuardianModelDistribution initialized with provided URI and database: {database}")
+        else:
+            # Only fetch from env/secrets if not provided explicitly
+            connection_info = get_mongodb_connection_info()
+            self.uri = uri or connection_info['uri']
+            self.database_name = database or connection_info['database']
         
         if not self.uri:
             logger.warning("⚠️ MongoDB URI not provided. Set MONGODB_URI environment variable.")
@@ -150,15 +155,18 @@ class GuardianModelDistribution:
             logger.info("🔗 Connecting to MongoDB for model distribution...")
             
             # Create client with more robust connection parameters
+            # Using the correct parameters for newer pymongo versions
             self.client = MongoClient(
                 self.uri,
                 server_api=ServerApi('1'),
                 serverSelectionTimeoutMS=5000,  # 5 second timeout
                 connectTimeoutMS=10000,         # 10 second connection timeout
                 socketTimeoutMS=45000,          # 45 second socket timeout
-                ssl=True,
-                ssl_cert_reqs=ssl.CERT_NONE,  # Skip certificate validation for CI/CD
-                tlsAllowInvalidCertificates=True  # Allow invalid certificates
+                # TLS/SSL settings for newer pymongo versions
+                tls=True,                       # Enable TLS/SSL
+                tlsCAFile=certifi.where(),      # Use certifi's CA bundle
+                tlsAllowInvalidCertificates=True,  # Allow self-signed certificates (if needed for some envs)
+                tlsAllowInvalidHostnames=True   # Allow hostname mismatch (if needed for some envs)
             )
             
             # Test connection with timeout
